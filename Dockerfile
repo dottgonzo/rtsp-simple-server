@@ -9,5 +9,5 @@ RUN go build -o /app/app.bin -buildvcs=false -ldflags="-extldflags=-static"
 
 FROM alpine:3
 CMD [ "/app.bin" ]
-RUN apk add ffmpeg
+RUN apk add --no-cache ffmpeg
 COPY --from=builder /app/app.bin /app.bin
