@@ -96,6 +96,7 @@ Features:
 * [WebRTC protocol](#webrtc-protocol)
   * [General usage](#general-usage-3)
   * [Usage inside a container or behind a NAT](#usage-inside-a-container-or-behind-a-nat)
+  * [Embedding](#embedding-1)
 * [Links](#links)
 
 ## Installation
@@ -264,7 +265,10 @@ Each time a user needs to be authenticated, the specified URL will be requested 
   "user": "user",
   "password": "password",
   "path": "path",
-  "action": "read|publish"
+  "protocol": "rtsp|rtmp|hls|webrtc",
+  "id": "id",
+  "action": "read|publish",
+  "query": "query"
 }
 ```
 
@@ -355,13 +359,12 @@ To save available streams to disk, you can use the `runOnReady` parameter and _F
 
 ```yml
 paths:
-  all:
-  original:
+  mypath:
     runOnReady: ffmpeg -i rtsp://localhost:$RTSP_PORT/$RTSP_PATH -c copy -f segment -strftime 1 -segment_time 60 -segment_format mpegts saved_%Y-%m-%d_%H-%M-%S.ts
     runOnReadyRestart: yes
 ```
 
-In the example configuration, streams are saved into TS files, that can be read even if the system crashes, while MP4 files can't.
+In the configuratio above, streams are saved into TS files, that can be read even if the system crashes, while MP4 files can't.
 
 ### On-demand publishing
 
@@ -405,6 +408,7 @@ EOF
 Enable and start the service:
 
 ```
+sudo systemctl daemon-reload
 sudo systemctl enable rtsp-simple-server
 sudo systemctl start rtsp-simple-server
 ```
@@ -624,6 +628,19 @@ If credentials are in use, use the following parameters:
 * Server: `rtmp://localhost`
 * Stream key: `mystream?user=myuser&pass=mypass`
 
+If you want to generate a stream that can be read with WebRTC, open `Settings -> Output -> Recording` and use the following parameters:
+
+* FFmpeg output type: `Output to URL`
+* File path or URL: `rtsp://localhost:8554/mystream`
+* Container format: `rtsp`
+* Check `show all codecs (even if potentically incompatible`
+* Video encoder: `h264_nvenc (libx264)`
+* Video encoder settings (if any): `bf=0`
+* Audio track: `1`
+* Audio encoder: `libopus`
+
+The use the button `Start Recording` (instead of `Start Streaming`) to start streaming.
+
 ### From OpenCV
 
 To publish a video stream from OpenCV to the server, OpenCV must be compiled with GStreamer support, by following this procedure:
@@ -841,6 +858,8 @@ In some scenarios, when reading RTSP from the server, decoded frames can be corr
       sourceProtocol: tcp
   ```
 
+* The stream throughput is too big to be handled by the network between server and readers. Upgrade the network or decrease the stream bitrate by re-encoding it.
+
 ## RTMP protocol
 
 ### General usage
@@ -918,19 +937,13 @@ ffmpeg -i rtsp://original-source -pix_fmt yuv420p -c:v libx264 -preset ultrafast
 
 ### Embedding
 
-The simples way to embed a live stream into a web page consists in using an iframe tag:
+The simples way to embed a HLS stream into a web page consists in using an iframe tag:
 
-```
+```html
 <iframe src="http://rtsp-simple-server-ip:8888/mystream" scrolling="no"></iframe>
 ```
 
-Alternatively you can create a video tag that points directly to the stream playlist:
-
-```
-<video src="http://localhost:8888/mystream/index.m3u8"></video>
-```
-
-Please note that most browsers don't support HLS directly (except Safari); a Javascript library, like [hls.js](https://github.com/video-dev/hls.js), must be used to load the stream. You can find a working example by looking at the [source code of the HLS muxer](internal/core/hls_muxer.go).
+For more advanced options, you can create and serve a custom web page by starting from the [source code of the default page](internal/core/hls_index.html).
 
 ### Low-Latency variant
 
@@ -1036,7 +1049,7 @@ docker run --rm -it \
 rtsp-simple-server
 ```
 
-Finally, if none of these methods work, you can force all WebRTC/ICE connections to pass through a TURN server, that must be configured externally. The server address and credentials must be set in the configuration file:
+Finally, if none of these methods work, you can force all WebRTC/ICE connections to pass through a TURN server, like [coturn](https://github.com/coturn/coturn), that must be configured externally. The server address and credentials must be set in the configuration file:
 
 ```yml
 webrtcICEServers: [turn:user:pass:host:ip]
@@ -1051,6 +1064,16 @@ webrtcICEServers: [turn:AUTH_SECRET:secret:host:ip]
 ```
 
 where `secret` is the secret of the TURN server. _rtsp-simple-server_ will generate a set of credentials by using the secret, and credentials will be sent to clients before the WebRTC/ICE connection is established.
+
+### Embedding
+
+The simples way to embed a WebRTC stream into a web page consists in using an iframe tag:
+
+```html
+<iframe src="http://rtsp-simple-server-ip:8889/mystream" scrolling="no"></iframe>
+```
+
+For more advanced options, you can create and serve a custom web page by starting from the [source code of the default page](internal/core/webrtc_index.html).
 
 ## Links
 

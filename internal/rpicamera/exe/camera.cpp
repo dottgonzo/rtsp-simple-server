@@ -19,11 +19,14 @@
 using libcamera::CameraManager;
 using libcamera::CameraConfiguration;
 using libcamera::Camera;
+using libcamera::ColorSpace;
 using libcamera::ControlList;
 using libcamera::FrameBufferAllocator;
 using libcamera::FrameBuffer;
+using libcamera::PixelFormat;
 using libcamera::Rectangle;
 using libcamera::Request;
+using libcamera::Size;
 using libcamera::Span;
 using libcamera::Stream;
 using libcamera::StreamRoles;
@@ -48,8 +51,8 @@ const char *camera_get_error() {
 }
 
 // https://github.com/raspberrypi/libcamera-apps/blob/dd97618a25523c2c4aa58f87af5f23e49aa6069c/core/libcamera_app.cpp#L42
-static libcamera::PixelFormat mode_to_pixel_format(sensor_mode_t *mode) {
-    static std::vector<std::pair<std::pair<int, bool>, libcamera::PixelFormat>> table = {
+static PixelFormat mode_to_pixel_format(sensor_mode_t *mode) {
+    static std::vector<std::pair<std::pair<int, bool>, PixelFormat>> table = {
         { {8, false}, formats::SBGGR8 },
         { {8, true}, formats::SBGGR8 },
         { {10, false}, formats::SBGGR10 },
@@ -77,8 +80,8 @@ struct CameraPriv {
     std::vector<std::unique_ptr<Request>> requests;
 };
 
-static int get_v4l2_colorspace(std::optional<libcamera::ColorSpace> const &cs) {
-    if (cs == libcamera::ColorSpace::Rec709) {
+static int get_v4l2_colorspace(std::optional<ColorSpace> const &cs) {
+    if (cs == ColorSpace::Rec709) {
         return V4L2_COLORSPACE_REC709;
     }
     return V4L2_COLORSPACE_SMPTE170M;
@@ -97,7 +100,7 @@ bool camera_create(parameters_t *params, camera_frame_cb frame_cb, camera_t **ca
         return false;
     }
 
-    std::vector<std::shared_ptr<libcamera::Camera>> cameras = camp->camera_manager->cameras();
+    std::vector<std::shared_ptr<Camera>> cameras = camp->camera_manager->cameras();
     auto rem = std::remove_if(cameras.begin(), cameras.end(),
         [](auto &cam) { return cam->id().find("/usb") != std::string::npos; });
     cameras.erase(rem, cameras.end());
@@ -130,19 +133,18 @@ bool camera_create(parameters_t *params, camera_frame_cb frame_cb, camera_t **ca
     }
 
     StreamConfiguration &video_stream_conf = conf->at(0);
+    video_stream_conf.size = libcamera::Size(params->width, params->height);
     video_stream_conf.pixelFormat = formats::YUV420;
     video_stream_conf.bufferCount = params->buffer_count;
-    video_stream_conf.size.width = params->width;
-    video_stream_conf.size.height = params->height;
     if (params->width >= 1280 || params->height >= 720) {
-        video_stream_conf.colorSpace = libcamera::ColorSpace::Rec709;
+        video_stream_conf.colorSpace = ColorSpace::Rec709;
     } else {
-        video_stream_conf.colorSpace = libcamera::ColorSpace::Smpte170m;
+        video_stream_conf.colorSpace = ColorSpace::Smpte170m;
     }
 
     if (params->mode != NULL) {
         StreamConfiguration &raw_stream_conf = conf->at(1);
-        raw_stream_conf.size = libcamera::Size(params->mode->width, params->mode->height);
+        raw_stream_conf.size = Size(params->mode->width, params->mode->height);
         raw_stream_conf.pixelFormat = mode_to_pixel_format(params->mode);
         raw_stream_conf.bufferCount = video_stream_conf.bufferCount;
     }
@@ -169,27 +171,33 @@ bool camera_create(parameters_t *params, camera_frame_cb frame_cb, camera_t **ca
 
     camp->video_stream = video_stream_conf.stream();
 
-    camp->allocator = std::make_unique<FrameBufferAllocator>(camp->camera);
-    res = camp->allocator->allocate(camp->video_stream);
-    if (res < 0) {
-        set_error("allocate() failed");
-        return false;
-    }
-
-    for (const std::unique_ptr<FrameBuffer> &buffer : camp->allocator->buffers(camp->video_stream)) {
+    for (unsigned int i = 0; i < params->buffer_count; i++) {
         std::unique_ptr<Request> request = camp->camera->createRequest((uint64_t)camp.get());
         if (request == NULL) {
             set_error("createRequest() failed");
             return false;
         }
+        camp->requests.push_back(std::move(request));
+    }
 
-        int res = request->addBuffer(camp->video_stream, buffer.get());
-        if (res != 0) {
-            set_error("addBuffer() failed");
+    camp->allocator = std::make_unique<FrameBufferAllocator>(camp->camera);
+    for (StreamConfiguration &stream_conf : *conf) {
+        Stream *stream = stream_conf.stream();
+
+        res = camp->allocator->allocate(stream);
+        if (res < 0) {
+            set_error("allocate() failed");
             return false;
         }
 
-        camp->requests.push_back(std::move(request));
+        int i = 0;
+        for (const std::unique_ptr<FrameBuffer> &buffer : camp->allocator->buffers(stream)) {
+            res = camp->requests.at(i++)->addBuffer(stream, buffer.get());
+            if (res != 0) {
+                set_error("addBuffer() failed");
+                return false;
+            }
+        }
     }
 
     camp->params = params;
@@ -206,14 +214,13 @@ static void on_request_complete(Request *request) {
 
     CameraPriv *camp = (CameraPriv *)request->cookie();
 
-    FrameBuffer *buffer = request->buffers().begin()->second;
-
+    FrameBuffer *buffer = request->buffers().at(camp->video_stream);
     int size = 0;
     for (const FrameBuffer::Plane &plane : buffer->planes()) {
         size += plane.length;
     }
-
-    camp->frame_cb(buffer->planes()[0].fd.get(), size, buffer->metadata().timestamp / 1000);
+    uint64_t ts = buffer->metadata().timestamp / 1000;
+    camp->frame_cb(buffer->planes()[0].fd.get(), size, ts);
 
     request->reuse(Request::ReuseFlag::ReuseBuffers);
     camp->camera->queueRequest(request);
@@ -272,14 +279,14 @@ bool camera_start(camera_t *cam) {
     ctrls.set(controls::AwbMode, awb_mode);
 
     int denoise_mode;
-    if (strcmp(camp->params->denoise, "off") == 0) {
-        denoise_mode = controls::draft::NoiseReductionModeOff;
-    } else if (strcmp(camp->params->denoise, "cdn_off") == 0) {
+    if (strcmp(camp->params->denoise, "cdn_off") == 0) {
         denoise_mode = controls::draft::NoiseReductionModeMinimal;
-    } if (strcmp(camp->params->denoise, "cdn_hq") == 0) {
+    } else if (strcmp(camp->params->denoise, "cdn_hq") == 0) {
         denoise_mode = controls::draft::NoiseReductionModeHighQuality;
-    } else {
+    } else if (strcmp(camp->params->denoise, "cdn_fast") == 0) {
         denoise_mode = controls::draft::NoiseReductionModeFast;
+    } else {
+        denoise_mode = controls::draft::NoiseReductionModeOff;
     }
     ctrls.set(controls::draft::NoiseReductionMode, denoise_mode);
 
