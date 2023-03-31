@@ -9,36 +9,39 @@ import (
 	"github.com/pion/rtp"
 )
 
-// DataMPEG4Audio is a MPEG4-audio data unit.
-type DataMPEG4Audio struct {
+// UnitMPEG4Audio is a MPEG4-audio data unit.
+type UnitMPEG4Audio struct {
 	RTPPackets []*rtp.Packet
 	NTP        time.Time
 	PTS        time.Duration
 	AUs        [][]byte
 }
 
-// GetRTPPackets implements Data.
-func (d *DataMPEG4Audio) GetRTPPackets() []*rtp.Packet {
+// GetRTPPackets implements Unit.
+func (d *UnitMPEG4Audio) GetRTPPackets() []*rtp.Packet {
 	return d.RTPPackets
 }
 
-// GetNTP implements Data.
-func (d *DataMPEG4Audio) GetNTP() time.Time {
+// GetNTP implements Unit.
+func (d *UnitMPEG4Audio) GetNTP() time.Time {
 	return d.NTP
 }
 
 type formatProcessorMPEG4Audio struct {
-	format  *format.MPEG4Audio
-	encoder *rtpmpeg4audio.Encoder
-	decoder *rtpmpeg4audio.Decoder
+	udpMaxPayloadSize int
+	format            *format.MPEG4Audio
+	encoder           *rtpmpeg4audio.Encoder
+	decoder           *rtpmpeg4audio.Decoder
 }
 
 func newMPEG4Audio(
+	udpMaxPayloadSize int,
 	forma *format.MPEG4Audio,
 	allocateEncoder bool,
 ) (*formatProcessorMPEG4Audio, error) {
 	t := &formatProcessorMPEG4Audio{
-		format: forma,
+		udpMaxPayloadSize: udpMaxPayloadSize,
+		format:            forma,
 	}
 
 	if allocateEncoder {
@@ -48,19 +51,19 @@ func newMPEG4Audio(
 	return t, nil
 }
 
-func (t *formatProcessorMPEG4Audio) Process(dat Data, hasNonRTSPReaders bool) error { //nolint:dupl
-	tdata := dat.(*DataMPEG4Audio)
+func (t *formatProcessorMPEG4Audio) Process(unit Unit, hasNonRTSPReaders bool) error { //nolint:dupl
+	tunit := unit.(*UnitMPEG4Audio)
 
-	if tdata.RTPPackets != nil {
-		pkt := tdata.RTPPackets[0]
+	if tunit.RTPPackets != nil {
+		pkt := tunit.RTPPackets[0]
 
 		// remove padding
 		pkt.Header.Padding = false
 		pkt.PaddingSize = 0
 
-		if pkt.MarshalSize() > maxPacketSize {
+		if pkt.MarshalSize() > t.udpMaxPayloadSize {
 			return fmt.Errorf("payload size (%d) is greater than maximum allowed (%d)",
-				pkt.MarshalSize(), maxPacketSize)
+				pkt.MarshalSize(), t.udpMaxPayloadSize)
 		}
 
 		// decode from RTP
@@ -69,7 +72,7 @@ func (t *formatProcessorMPEG4Audio) Process(dat Data, hasNonRTSPReaders bool) er
 				t.decoder = t.format.CreateDecoder()
 			}
 
-			aus, PTS, err := t.decoder.Decode(pkt)
+			aus, pts, err := t.decoder.Decode(pkt)
 			if err != nil {
 				if err == rtpmpeg4audio.ErrMorePacketsNeeded {
 					return nil
@@ -77,19 +80,19 @@ func (t *formatProcessorMPEG4Audio) Process(dat Data, hasNonRTSPReaders bool) er
 				return err
 			}
 
-			tdata.AUs = aus
-			tdata.PTS = PTS
+			tunit.AUs = aus
+			tunit.PTS = pts
 		}
 
 		// route packet as is
 		return nil
 	}
 
-	pkts, err := t.encoder.Encode(tdata.AUs, tdata.PTS)
+	pkts, err := t.encoder.Encode(tunit.AUs, tunit.PTS)
 	if err != nil {
 		return err
 	}
 
-	tdata.RTPPackets = pkts
+	tunit.RTPPackets = pkts
 	return nil
 }

@@ -27,10 +27,6 @@ type rtspSourceParent interface {
 }
 
 type rtspSource struct {
-	ur              string
-	proto           conf.SourceProtocol
-	anyPortEnable   bool
-	fingerprint     string
 	readTimeout     conf.StringDuration
 	writeTimeout    conf.StringDuration
 	readBufferCount int
@@ -38,20 +34,12 @@ type rtspSource struct {
 }
 
 func newRTSPSource(
-	ur string,
-	proto conf.SourceProtocol,
-	anyPortEnable bool,
-	fingerprint string,
 	readTimeout conf.StringDuration,
 	writeTimeout conf.StringDuration,
 	readBufferCount int,
 	parent rtspSourceParent,
 ) *rtspSource {
 	return &rtspSource{
-		ur:              ur,
-		proto:           proto,
-		anyPortEnable:   anyPortEnable,
-		fingerprint:     fingerprint,
 		readTimeout:     readTimeout,
 		writeTimeout:    writeTimeout,
 		readBufferCount: readBufferCount,
@@ -64,18 +52,18 @@ func (s *rtspSource) Log(level logger.Level, format string, args ...interface{})
 }
 
 // run implements sourceStaticImpl.
-func (s *rtspSource) run(ctx context.Context) error {
+func (s *rtspSource) run(ctx context.Context, cnf *conf.PathConf, reloadConf chan *conf.PathConf) error {
 	s.Log(logger.Debug, "connecting")
 
 	var tlsConfig *tls.Config
-	if s.fingerprint != "" {
+	if cnf.SourceFingerprint != "" {
 		tlsConfig = &tls.Config{
 			InsecureSkipVerify: true,
 			VerifyConnection: func(cs tls.ConnectionState) error {
 				h := sha256.New()
 				h.Write(cs.PeerCertificates[0].Raw)
 				hstr := hex.EncodeToString(h.Sum(nil))
-				fingerprintLower := strings.ToLower(s.fingerprint)
+				fingerprintLower := strings.ToLower(cnf.SourceFingerprint)
 
 				if hstr != fingerprintLower {
 					return fmt.Errorf("server fingerprint do not match: expected %s, got %s",
@@ -88,24 +76,24 @@ func (s *rtspSource) run(ctx context.Context) error {
 	}
 
 	c := &gortsplib.Client{
-		Transport:       s.proto.Transport,
+		Transport:       cnf.SourceProtocol.Transport,
 		TLSConfig:       tlsConfig,
 		ReadTimeout:     time.Duration(s.readTimeout),
 		WriteTimeout:    time.Duration(s.writeTimeout),
 		ReadBufferCount: s.readBufferCount,
-		AnyPortEnable:   s.anyPortEnable,
+		AnyPortEnable:   cnf.SourceAnyPortEnable,
 		OnRequest: func(req *base.Request) {
 			s.Log(logger.Debug, "c->s %v", req)
 		},
 		OnResponse: func(res *base.Response) {
 			s.Log(logger.Debug, "s->c %v", res)
 		},
-		OnDecodeError: func(err error) {
-			s.Log(logger.Warn, "%v", err)
+		Log: func(level gortsplib.LogLevel, format string, args ...interface{}) {
+			s.Log(logger.Warn, format, args...)
 		},
 	}
 
-	u, err := url.Parse(s.ur)
+	u, err := url.Parse(cnf.Source)
 	if err != nil {
 		return err
 	}
@@ -151,7 +139,7 @@ func (s *rtspSource) run(ctx context.Context) error {
 					switch forma.(type) {
 					case *format.H264:
 						c.OnPacketRTP(medi, forma, func(pkt *rtp.Packet) {
-							err := res.stream.writeData(cmedia, cformat, &formatprocessor.DataH264{
+							err := res.stream.writeData(cmedia, cformat, &formatprocessor.UnitH264{
 								RTPPackets: []*rtp.Packet{pkt},
 								NTP:        time.Now(),
 							})
@@ -162,7 +150,7 @@ func (s *rtspSource) run(ctx context.Context) error {
 
 					case *format.H265:
 						c.OnPacketRTP(medi, forma, func(pkt *rtp.Packet) {
-							err := res.stream.writeData(cmedia, cformat, &formatprocessor.DataH265{
+							err := res.stream.writeData(cmedia, cformat, &formatprocessor.UnitH265{
 								RTPPackets: []*rtp.Packet{pkt},
 								NTP:        time.Now(),
 							})
@@ -173,7 +161,7 @@ func (s *rtspSource) run(ctx context.Context) error {
 
 					case *format.VP8:
 						c.OnPacketRTP(medi, forma, func(pkt *rtp.Packet) {
-							err := res.stream.writeData(cmedia, cformat, &formatprocessor.DataVP8{
+							err := res.stream.writeData(cmedia, cformat, &formatprocessor.UnitVP8{
 								RTPPackets: []*rtp.Packet{pkt},
 								NTP:        time.Now(),
 							})
@@ -184,7 +172,7 @@ func (s *rtspSource) run(ctx context.Context) error {
 
 					case *format.VP9:
 						c.OnPacketRTP(medi, forma, func(pkt *rtp.Packet) {
-							err := res.stream.writeData(cmedia, cformat, &formatprocessor.DataVP9{
+							err := res.stream.writeData(cmedia, cformat, &formatprocessor.UnitVP9{
 								RTPPackets: []*rtp.Packet{pkt},
 								NTP:        time.Now(),
 							})
@@ -195,7 +183,7 @@ func (s *rtspSource) run(ctx context.Context) error {
 
 					case *format.MPEG4Audio:
 						c.OnPacketRTP(medi, forma, func(pkt *rtp.Packet) {
-							err := res.stream.writeData(cmedia, cformat, &formatprocessor.DataMPEG4Audio{
+							err := res.stream.writeData(cmedia, cformat, &formatprocessor.UnitMPEG4Audio{
 								RTPPackets: []*rtp.Packet{pkt},
 								NTP:        time.Now(),
 							})
@@ -206,7 +194,7 @@ func (s *rtspSource) run(ctx context.Context) error {
 
 					case *format.Opus:
 						c.OnPacketRTP(medi, forma, func(pkt *rtp.Packet) {
-							err := res.stream.writeData(cmedia, cformat, &formatprocessor.DataOpus{
+							err := res.stream.writeData(cmedia, cformat, &formatprocessor.UnitOpus{
 								RTPPackets: []*rtp.Packet{pkt},
 								NTP:        time.Now(),
 							})
@@ -217,7 +205,7 @@ func (s *rtspSource) run(ctx context.Context) error {
 
 					default:
 						c.OnPacketRTP(medi, forma, func(pkt *rtp.Packet) {
-							err := res.stream.writeData(cmedia, cformat, &formatprocessor.DataGeneric{
+							err := res.stream.writeData(cmedia, cformat, &formatprocessor.UnitGeneric{
 								RTPPackets: []*rtp.Packet{pkt},
 								NTP:        time.Now(),
 							})
@@ -238,14 +226,18 @@ func (s *rtspSource) run(ctx context.Context) error {
 		}()
 	}()
 
-	select {
-	case err := <-readErr:
-		return err
+	for {
+		select {
+		case err := <-readErr:
+			return err
 
-	case <-ctx.Done():
-		c.Close()
-		<-readErr
-		return nil
+		case <-reloadConf:
+
+		case <-ctx.Done():
+			c.Close()
+			<-readErr
+			return nil
+		}
 	}
 }
 

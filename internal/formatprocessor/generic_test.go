@@ -15,7 +15,7 @@ func TestGenericRemovePadding(t *testing.T) {
 	}
 	forma.Init()
 
-	p, err := New(forma, false)
+	p, err := New(1472, forma, false)
 	require.NoError(t, err)
 
 	pkt := &rtp.Packet{
@@ -32,7 +32,7 @@ func TestGenericRemovePadding(t *testing.T) {
 		PaddingSize: 20,
 	}
 
-	err = p.Process(&DataGeneric{
+	err = p.Process(&UnitGeneric{
 		RTPPackets: []*rtp.Packet{pkt},
 	}, false)
 	require.NoError(t, err)

@@ -3,7 +3,8 @@ CFLAGS = \
 	-Werror \
 	-Wall \
 	-Wextra \
-	-Wno-unused-parameter
+	-Wno-unused-parameter \
+	-Wno-unused-result
 
 CXXFLAGS = \
 	-Ofast \
@@ -11,6 +12,7 @@ CXXFLAGS = \
 	-Wall \
 	-Wextra \
 	-Wno-unused-parameter \
+	-Wno-unused-result \
 	-std=c++17 \
 	$$(pkg-config --cflags libcamera)
 
@@ -24,7 +26,8 @@ OBJS = \
 	encoder.o \
 	main.o \
 	parameters.o \
-	roi.o \
+	pipe.o \
+	window.o \
 	sensor_mode.o
 
 all: exe
@@ -37,5 +40,5 @@ all: exe
 
 exe: $(OBJS)
 	$(CXX) $^ $(LDFLAGS) -o $@
-	patchelf --replace-needed libcamera.so.0.0.2 libcamera.so.x.x.x $@
-	patchelf --replace-needed libcamera-base.so.0.0.2 libcamera-base.so.x.x.x $@
+	patchelf --replace-needed $$(basename /usr/lib/*-linux-*/libcamera.so.0*) libcamera.so.x.x.x $@
+	patchelf --replace-needed $$(basename /usr/lib/*-linux-*/libcamera-base.so.0*) libcamera-base.so.x.x.x $@

@@ -6,8 +6,11 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -20,8 +23,8 @@ import (
 
 	"github.com/aler9/rtsp-simple-server/internal/conf"
 	"github.com/aler9/rtsp-simple-server/internal/formatprocessor"
-	"github.com/aler9/rtsp-simple-server/internal/hls"
 	"github.com/aler9/rtsp-simple-server/internal/logger"
+	"github.com/bluenviron/gohlslib"
 )
 
 const (
@@ -35,7 +38,7 @@ var hlsIndex []byte
 
 type hlsMuxerResponse struct {
 	muxer *hlsMuxer
-	cb    func() *hls.MuxerFileResponse
+	cb    func() *gohlslib.MuxerFileResponse
 }
 
 type hlsMuxerRequest struct {
@@ -55,7 +58,6 @@ type hlsMuxerParent interface {
 }
 
 type hlsMuxer struct {
-	name                      string
 	remoteAddr                string
 	externalAuthenticationURL string
 	alwaysRemux               bool
@@ -64,6 +66,7 @@ type hlsMuxer struct {
 	segmentDuration           conf.StringDuration
 	partDuration              conf.StringDuration
 	segmentMaxSize            conf.StringSize
+	directory                 string
 	readBufferCount           int
 	wg                        *sync.WaitGroup
 	pathName                  string
@@ -76,7 +79,7 @@ type hlsMuxer struct {
 	path            *path
 	ringBuffer      *ringbuffer.RingBuffer
 	lastRequestTime *int64
-	muxer           *hls.Muxer
+	muxer           *gohlslib.Muxer
 	requests        []*hlsMuxerRequest
 	bytesSent       *uint64
 
@@ -87,7 +90,6 @@ type hlsMuxer struct {
 
 func newHLSMuxer(
 	parentCtx context.Context,
-	name string,
 	remoteAddr string,
 	externalAuthenticationURL string,
 	alwaysRemux bool,
@@ -96,8 +98,8 @@ func newHLSMuxer(
 	segmentDuration conf.StringDuration,
 	partDuration conf.StringDuration,
 	segmentMaxSize conf.StringSize,
+	directory string,
 	readBufferCount int,
-	req *hlsMuxerRequest,
 	wg *sync.WaitGroup,
 	pathName string,
 	pathManager hlsMuxerPathManager,
@@ -106,7 +108,6 @@ func newHLSMuxer(
 	ctx, ctxCancel := context.WithCancel(parentCtx)
 
 	m := &hlsMuxer{
-		name:                      name,
 		remoteAddr:                remoteAddr,
 		externalAuthenticationURL: externalAuthenticationURL,
 		alwaysRemux:               alwaysRemux,
@@ -115,6 +116,7 @@ func newHLSMuxer(
 		segmentDuration:           segmentDuration,
 		partDuration:              partDuration,
 		segmentMaxSize:            segmentMaxSize,
+		directory:                 directory,
 		readBufferCount:           readBufferCount,
 		wg:                        wg,
 		pathName:                  pathName,
@@ -207,7 +209,7 @@ func (m *hlsMuxer) run() {
 				}
 
 			case req := <-m.chAPIHLSMuxersList:
-				req.data.Items[m.name] = hlsServerAPIMuxersListItem{
+				req.data.Items[m.pathName] = hlsServerAPIMuxersListItem{
 					Created:     m.created,
 					LastRequest: time.Unix(0, atomic.LoadInt64(m.lastRequestTime)),
 					BytesSent:   atomic.LoadUint64(m.bytesSent),
@@ -296,16 +298,25 @@ func (m *hlsMuxer) runInner(innerCtx context.Context, innerReady chan struct{}) 
 			"the stream doesn't contain any supported codec (which are currently H264, H265, MPEG4-Audio, Opus)")
 	}
 
-	var err error
-	m.muxer, err = hls.NewMuxer(
-		hls.MuxerVariant(m.variant),
-		m.segmentCount,
-		time.Duration(m.segmentDuration),
-		time.Duration(m.partDuration),
-		uint64(m.segmentMaxSize),
-		videoFormat,
-		audioFormat,
-	)
+	var muxerDirectory string
+	if m.directory != "" {
+		muxerDirectory = filepath.Join(m.directory, m.pathName)
+		os.MkdirAll(muxerDirectory, 0o755)
+		defer os.Remove(muxerDirectory)
+	}
+
+	m.muxer = &gohlslib.Muxer{
+		Variant:         gohlslib.MuxerVariant(m.variant),
+		SegmentCount:    m.segmentCount,
+		SegmentDuration: time.Duration(m.segmentDuration),
+		PartDuration:    time.Duration(m.partDuration),
+		SegmentMaxSize:  uint64(m.segmentMaxSize),
+		VideoTrack:      videoFormat,
+		AudioTrack:      audioFormat,
+		Directory:       muxerDirectory,
+	}
+
+	err := m.muxer.Start()
 	if err != nil {
 		return fmt.Errorf("muxer error: %v", err)
 	}
@@ -355,21 +366,21 @@ func (m *hlsMuxer) setupVideoMedia(stream *stream) (*media.Media, format.Format)
 		videoStartPTSFilled := false
 		var videoStartPTS time.Duration
 
-		stream.readerAdd(m, videoMedia, videoFormatH265, func(dat formatprocessor.Data) {
+		stream.readerAdd(m, videoMedia, videoFormatH265, func(unit formatprocessor.Unit) {
 			m.ringBuffer.Push(func() error {
-				tdata := dat.(*formatprocessor.DataH265)
+				tunit := unit.(*formatprocessor.UnitH265)
 
-				if tdata.AU == nil {
+				if tunit.AU == nil {
 					return nil
 				}
 
 				if !videoStartPTSFilled {
 					videoStartPTSFilled = true
-					videoStartPTS = tdata.PTS
+					videoStartPTS = tunit.PTS
 				}
-				pts := tdata.PTS - videoStartPTS
+				pts := tunit.PTS - videoStartPTS
 
-				err := m.muxer.WriteH26x(tdata.NTP, pts, tdata.AU)
+				err := m.muxer.WriteH26x(tunit.NTP, pts, tunit.AU)
 				if err != nil {
 					return fmt.Errorf("muxer error: %v", err)
 				}
@@ -388,21 +399,21 @@ func (m *hlsMuxer) setupVideoMedia(stream *stream) (*media.Media, format.Format)
 		videoStartPTSFilled := false
 		var videoStartPTS time.Duration
 
-		stream.readerAdd(m, videoMedia, videoFormatH264, func(dat formatprocessor.Data) {
+		stream.readerAdd(m, videoMedia, videoFormatH264, func(unit formatprocessor.Unit) {
 			m.ringBuffer.Push(func() error {
-				tdata := dat.(*formatprocessor.DataH264)
+				tunit := unit.(*formatprocessor.UnitH264)
 
-				if tdata.AU == nil {
+				if tunit.AU == nil {
 					return nil
 				}
 
 				if !videoStartPTSFilled {
 					videoStartPTSFilled = true
-					videoStartPTS = tdata.PTS
+					videoStartPTS = tunit.PTS
 				}
-				pts := tdata.PTS - videoStartPTS
+				pts := tunit.PTS - videoStartPTS
 
-				err := m.muxer.WriteH26x(tdata.NTP, pts, tdata.AU)
+				err := m.muxer.WriteH26x(tunit.NTP, pts, tunit.AU)
 				if err != nil {
 					return fmt.Errorf("muxer error: %v", err)
 				}
@@ -425,23 +436,23 @@ func (m *hlsMuxer) setupAudioMedia(stream *stream) (*media.Media, format.Format)
 		audioStartPTSFilled := false
 		var audioStartPTS time.Duration
 
-		stream.readerAdd(m, audioMedia, audioFormatMPEG4Audio, func(dat formatprocessor.Data) {
+		stream.readerAdd(m, audioMedia, audioFormatMPEG4Audio, func(unit formatprocessor.Unit) {
 			m.ringBuffer.Push(func() error {
-				tdata := dat.(*formatprocessor.DataMPEG4Audio)
+				tunit := unit.(*formatprocessor.UnitMPEG4Audio)
 
-				if tdata.AUs == nil {
+				if tunit.AUs == nil {
 					return nil
 				}
 
 				if !audioStartPTSFilled {
 					audioStartPTSFilled = true
-					audioStartPTS = tdata.PTS
+					audioStartPTS = tunit.PTS
 				}
-				pts := tdata.PTS - audioStartPTS
+				pts := tunit.PTS - audioStartPTS
 
-				for i, au := range tdata.AUs {
+				for i, au := range tunit.AUs {
 					err := m.muxer.WriteAudio(
-						tdata.NTP,
+						tunit.NTP,
 						pts+time.Duration(i)*mpeg4audio.SamplesPerAccessUnit*
 							time.Second/time.Duration(audioFormatMPEG4Audio.ClockRate()),
 						au)
@@ -464,20 +475,20 @@ func (m *hlsMuxer) setupAudioMedia(stream *stream) (*media.Media, format.Format)
 		audioStartPTSFilled := false
 		var audioStartPTS time.Duration
 
-		stream.readerAdd(m, audioMedia, audioFormatOpus, func(dat formatprocessor.Data) {
+		stream.readerAdd(m, audioMedia, audioFormatOpus, func(unit formatprocessor.Unit) {
 			m.ringBuffer.Push(func() error {
-				tdata := dat.(*formatprocessor.DataOpus)
+				tunit := unit.(*formatprocessor.UnitOpus)
 
 				if !audioStartPTSFilled {
 					audioStartPTSFilled = true
-					audioStartPTS = tdata.PTS
+					audioStartPTS = tunit.PTS
 				}
-				pts := tdata.PTS - audioStartPTS
+				pts := tunit.PTS - audioStartPTS
 
 				err := m.muxer.WriteAudio(
-					tdata.NTP,
+					tunit.NTP,
 					pts,
-					tdata.Frame)
+					tunit.Frame)
 				if err != nil {
 					return fmt.Errorf("muxer error: %v", err)
 				}
@@ -506,15 +517,15 @@ func (m *hlsMuxer) runWriter() error {
 	}
 }
 
-func (m *hlsMuxer) handleRequest(req *hlsMuxerRequest) func() *hls.MuxerFileResponse {
+func (m *hlsMuxer) handleRequest(req *hlsMuxerRequest) func() *gohlslib.MuxerFileResponse {
 	atomic.StoreInt64(m.lastRequestTime, time.Now().UnixNano())
 
 	err := m.authenticate(req.ctx)
 	if err != nil {
 		if terr, ok := err.(pathErrAuthCritical); ok {
 			m.log(logger.Info, "authentication error: %s", terr.message)
-			return func() *hls.MuxerFileResponse {
-				return &hls.MuxerFileResponse{
+			return func() *gohlslib.MuxerFileResponse {
+				return &gohlslib.MuxerFileResponse{
 					Status: http.StatusUnauthorized,
 					Header: map[string]string{
 						"WWW-Authenticate": `Basic realm="rtsp-simple-server"`,
@@ -523,8 +534,8 @@ func (m *hlsMuxer) handleRequest(req *hlsMuxerRequest) func() *hls.MuxerFileResp
 			}
 		}
 
-		return func() *hls.MuxerFileResponse {
-			return &hls.MuxerFileResponse{
+		return func() *gohlslib.MuxerFileResponse {
+			return &gohlslib.MuxerFileResponse{
 				Status: http.StatusUnauthorized,
 				Header: map[string]string{
 					"WWW-Authenticate": `Basic realm="rtsp-simple-server"`,
@@ -534,18 +545,18 @@ func (m *hlsMuxer) handleRequest(req *hlsMuxerRequest) func() *hls.MuxerFileResp
 	}
 
 	if req.file == "" {
-		return func() *hls.MuxerFileResponse {
-			return &hls.MuxerFileResponse{
+		return func() *gohlslib.MuxerFileResponse {
+			return &gohlslib.MuxerFileResponse{
 				Status: http.StatusOK,
 				Header: map[string]string{
 					"Content-Type": `text/html`,
 				},
-				Body: bytes.NewReader(hlsIndex),
+				Body: io.NopCloser(bytes.NewReader(hlsIndex)),
 			}
 		}
 	}
 
-	return func() *hls.MuxerFileResponse {
+	return func() *gohlslib.MuxerFileResponse {
 		return m.muxer.File(
 			req.file,
 			req.ctx.Query("_HLS_msn"),
@@ -555,7 +566,7 @@ func (m *hlsMuxer) handleRequest(req *hlsMuxerRequest) func() *hls.MuxerFileResp
 }
 
 func (m *hlsMuxer) authenticate(ctx *gin.Context) error {
-	pathConf := m.path.Conf()
+	pathConf := m.path.safeConf()
 	pathIPs := pathConf.ReadIPs
 	pathUser := pathConf.ReadUser
 	pathPass := pathConf.ReadPass

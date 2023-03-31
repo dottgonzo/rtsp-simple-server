@@ -9,6 +9,10 @@ import (
 	"time"
 )
 
+// Cleanup cleanups files created by the camera implementation.
+func Cleanup() {
+}
+
 // RPICamera is a RPI Camera reader.
 type RPICamera struct{}
 
@@ -22,4 +26,8 @@ func New(
 
 // Close closes a RPICamera.
 func (c *RPICamera) Close() {
+}
+
+// ReloadParams reloads the camera parameters.
+func (c *RPICamera) ReloadParams(params Params) {
 }

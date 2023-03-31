@@ -13,6 +13,7 @@ import (
 
 	"github.com/aler9/gortsplib/v2"
 	"github.com/aler9/gortsplib/v2/pkg/headers"
+	"github.com/bluenviron/gohlslib"
 	"golang.org/x/crypto/nacl/secretbox"
 	"gopkg.in/yaml.v2"
 
@@ -175,6 +176,7 @@ type Conf struct {
 	ReadTimeout               StringDuration  `json:"readTimeout"`
 	WriteTimeout              StringDuration  `json:"writeTimeout"`
 	ReadBufferCount           int             `json:"readBufferCount"`
+	UDPMaxPayloadSize         int             `json:"udpMaxPayloadSize"`
 	ExternalAuthenticationURL string          `json:"externalAuthenticationURL"`
 	API                       bool            `json:"api"`
 	APIAddress                string          `json:"apiAddress"`
@@ -222,6 +224,7 @@ type Conf struct {
 	HLSSegmentMaxSize  StringSize     `json:"hlsSegmentMaxSize"`
 	HLSAllowOrigin     string         `json:"hlsAllowOrigin"`
 	HLSTrustedProxies  IPsOrCIDRs     `json:"hlsTrustedProxies"`
+	HLSDirectory       string         `json:"hlsDirectory"`
 
 	// WebRTC
 	WebRTCDisable           bool       `json:"webrtcDisable"`
@@ -262,6 +265,22 @@ func Load(fpath string) (*Conf, bool, error) {
 	return conf, found, nil
 }
 
+// Clone clones the configuration.
+func (conf Conf) Clone() *Conf {
+	enc, err := json.Marshal(conf)
+	if err != nil {
+		panic(err)
+	}
+
+	var dest Conf
+	err = json.Unmarshal(enc, &dest)
+	if err != nil {
+		panic(err)
+	}
+
+	return &dest
+}
+
 // CheckAndFillMissing checks the configuration for errors and fills missing parameters.
 func (conf *Conf) CheckAndFillMissing() error {
 	// general
@@ -284,7 +303,13 @@ func (conf *Conf) CheckAndFillMissing() error {
 		conf.ReadBufferCount = 512
 	}
 	if (conf.ReadBufferCount & (conf.ReadBufferCount - 1)) != 0 {
-		return fmt.Errorf("'ReadBufferCount' must be a power of two")
+		return fmt.Errorf("'readBufferCount' must be a power of two")
+	}
+	if conf.UDPMaxPayloadSize == 0 {
+		conf.UDPMaxPayloadSize = 1500
+	}
+	if conf.UDPMaxPayloadSize > 1500 {
+		return fmt.Errorf("'udpMaxPayloadSize' must be less than 1500")
 	}
 	if conf.ExternalAuthenticationURL != "" {
 		if !strings.HasPrefix(conf.ExternalAuthenticationURL, "http://") &&
@@ -368,6 +393,9 @@ func (conf *Conf) CheckAndFillMissing() error {
 	if conf.HLSServerCert == "" {
 		conf.HLSServerCert = "server.crt"
 	}
+	if conf.HLSVariant == 0 {
+		conf.HLSVariant = HLSVariant(gohlslib.MuxerVariantLowLatency)
+	}
 	if conf.HLSSegmentCount == 0 {
 		conf.HLSSegmentCount = 7
 	}
@@ -382,21 +410,6 @@ func (conf *Conf) CheckAndFillMissing() error {
 	}
 	if conf.HLSAllowOrigin == "" {
 		conf.HLSAllowOrigin = "*"
-	}
-	switch conf.HLSVariant {
-	case HLSVariantLowLatency:
-		if conf.HLSSegmentCount < 7 {
-			return fmt.Errorf("Low-Latency HLS requires at least 7 segments")
-		}
-
-		if !conf.HLSEncryption {
-			return fmt.Errorf("Low-Latency HLS requires encryption")
-		}
-
-	default:
-		if conf.HLSSegmentCount < 3 {
-			return fmt.Errorf("The minimum number of HLS segments is 3")
-		}
 	}
 
 	// WebRTC

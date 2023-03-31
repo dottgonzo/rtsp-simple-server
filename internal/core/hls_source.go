@@ -7,9 +7,10 @@ import (
 	"github.com/aler9/gortsplib/v2/pkg/format"
 	"github.com/aler9/gortsplib/v2/pkg/media"
 
+	"github.com/aler9/rtsp-simple-server/internal/conf"
 	"github.com/aler9/rtsp-simple-server/internal/formatprocessor"
-	"github.com/aler9/rtsp-simple-server/internal/hls"
 	"github.com/aler9/rtsp-simple-server/internal/logger"
+	"github.com/bluenviron/gohlslib"
 )
 
 type hlsSourceParent interface {
@@ -19,20 +20,14 @@ type hlsSourceParent interface {
 }
 
 type hlsSource struct {
-	ur          string
-	fingerprint string
-	parent      hlsSourceParent
+	parent hlsSourceParent
 }
 
 func newHLSSource(
-	ur string,
-	fingerprint string,
 	parent hlsSourceParent,
 ) *hlsSource {
 	return &hlsSource{
-		ur:          ur,
-		fingerprint: fingerprint,
-		parent:      parent,
+		parent: parent,
 	}
 }
 
@@ -41,7 +36,7 @@ func (s *hlsSource) Log(level logger.Level, format string, args ...interface{}) 
 }
 
 // run implements sourceStaticImpl.
-func (s *hlsSource) run(ctx context.Context) error {
+func (s *hlsSource) run(ctx context.Context, cnf *conf.PathConf, reloadConf chan *conf.PathConf) error {
 	var stream *stream
 
 	defer func() {
@@ -50,13 +45,12 @@ func (s *hlsSource) run(ctx context.Context) error {
 		}
 	}()
 
-	c, err := hls.NewClient(
-		s.ur,
-		s.fingerprint,
-		s,
-	)
-	if err != nil {
-		return err
+	c := &gohlslib.Client{
+		URI:         cnf.Source,
+		Fingerprint: cnf.SourceFingerprint,
+		Log: func(level gohlslib.LogLevel, format string, args ...interface{}) {
+			s.Log(logger.Level(level), format, args...)
+		},
 	}
 
 	c.OnTracks(func(tracks []format.Format) error {
@@ -64,18 +58,19 @@ func (s *hlsSource) run(ctx context.Context) error {
 
 		for _, track := range tracks {
 			medi := &media.Media{
-				Type:    media.TypeVideo,
 				Formats: []format.Format{track},
 			}
 			medias = append(medias, medi)
-			ctrack := track
+			cformat := track
 
 			switch track.(type) {
 			case *format.H264:
-				c.OnData(track, func(pts time.Duration, dat interface{}) {
-					err := stream.writeData(medi, ctrack, &formatprocessor.DataH264{
+				medi.Type = media.TypeVideo
+
+				c.OnData(track, func(pts time.Duration, unit interface{}) {
+					err := stream.writeData(medi, cformat, &formatprocessor.UnitH264{
 						PTS: pts,
-						AU:  dat.([][]byte),
+						AU:  unit.([][]byte),
 						NTP: time.Now(),
 					})
 					if err != nil {
@@ -84,10 +79,12 @@ func (s *hlsSource) run(ctx context.Context) error {
 				})
 
 			case *format.H265:
-				c.OnData(track, func(pts time.Duration, dat interface{}) {
-					err := stream.writeData(medi, ctrack, &formatprocessor.DataH265{
+				medi.Type = media.TypeVideo
+
+				c.OnData(track, func(pts time.Duration, unit interface{}) {
+					err := stream.writeData(medi, cformat, &formatprocessor.UnitH265{
 						PTS: pts,
-						AU:  dat.([][]byte),
+						AU:  unit.([][]byte),
 						NTP: time.Now(),
 					})
 					if err != nil {
@@ -96,10 +93,12 @@ func (s *hlsSource) run(ctx context.Context) error {
 				})
 
 			case *format.MPEG4Audio:
-				c.OnData(track, func(pts time.Duration, dat interface{}) {
-					err := stream.writeData(medi, ctrack, &formatprocessor.DataMPEG4Audio{
+				medi.Type = media.TypeAudio
+
+				c.OnData(track, func(pts time.Duration, unit interface{}) {
+					err := stream.writeData(medi, cformat, &formatprocessor.UnitMPEG4Audio{
 						PTS: pts,
-						AUs: [][]byte{dat.([]byte)},
+						AUs: [][]byte{unit.([]byte)},
 						NTP: time.Now(),
 					})
 					if err != nil {
@@ -108,10 +107,12 @@ func (s *hlsSource) run(ctx context.Context) error {
 				})
 
 			case *format.Opus:
-				c.OnData(track, func(pts time.Duration, dat interface{}) {
-					err := stream.writeData(medi, ctrack, &formatprocessor.DataOpus{
+				medi.Type = media.TypeAudio
+
+				c.OnData(track, func(pts time.Duration, unit interface{}) {
+					err := stream.writeData(medi, cformat, &formatprocessor.UnitOpus{
 						PTS:   pts,
-						Frame: dat.([]byte),
+						Frame: unit.([]byte),
 						NTP:   time.Now(),
 					})
 					if err != nil {
@@ -135,16 +136,24 @@ func (s *hlsSource) run(ctx context.Context) error {
 		return nil
 	})
 
-	c.Start()
-
-	select {
-	case err := <-c.Wait():
+	err := c.Start()
+	if err != nil {
 		return err
+	}
 
-	case <-ctx.Done():
-		c.Close()
-		<-c.Wait()
-		return nil
+	for {
+		select {
+		case err := <-c.Wait():
+			c.Close()
+			return err
+
+		case <-reloadConf:
+
+		case <-ctx.Done():
+			c.Close()
+			<-c.Wait()
+			return nil
+		}
 	}
 }
 

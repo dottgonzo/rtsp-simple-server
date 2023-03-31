@@ -64,6 +64,7 @@ type hlsServer struct {
 	segmentMaxSize            conf.StringSize
 	allowOrigin               string
 	trustedProxies            conf.IPsOrCIDRs
+	directory                 string
 	readBufferCount           int
 	pathManager               *pathManager
 	metrics                   *metrics
@@ -99,6 +100,7 @@ func newHLSServer(
 	segmentMaxSize conf.StringSize,
 	allowOrigin string,
 	trustedProxies conf.IPsOrCIDRs,
+	directory string,
 	readBufferCount int,
 	pathManager *pathManager,
 	metrics *metrics,
@@ -134,6 +136,7 @@ func newHLSServer(
 		segmentMaxSize:            segmentMaxSize,
 		allowOrigin:               allowOrigin,
 		trustedProxies:            trustedProxies,
+		directory:                 directory,
 		readBufferCount:           readBufferCount,
 		pathManager:               pathManager,
 		parent:                    parent,
@@ -204,15 +207,15 @@ outer:
 		select {
 		case pa := <-s.chPathSourceReady:
 			if s.alwaysRemux {
-				s.createMuxer(pa.Name(), "", nil)
+				s.createMuxer(pa.name, "")
 			}
 
 		case pa := <-s.chPathSourceNotReady:
 			if s.alwaysRemux {
-				c, ok := s.muxers[pa.Name()]
+				c, ok := s.muxers[pa.name]
 				if ok {
 					c.close()
-					delete(s.muxers, pa.Name())
+					delete(s.muxers, pa.name)
 				}
 			}
 
@@ -226,7 +229,7 @@ outer:
 				req.res <- nil
 
 			default:
-				r := s.createMuxer(req.path, req.ctx.ClientIP(), req)
+				r := s.createMuxer(req.path, req.ctx.ClientIP())
 				r.processRequest(req)
 			}
 
@@ -331,6 +334,7 @@ func (s *hlsServer) onRequest(ctx *gin.Context) {
 			ctx.Writer.WriteHeader(res.Status)
 
 			if res.Body != nil {
+				defer res.Body.Close()
 				n, _ := io.Copy(ctx.Writer, res.Body)
 				res1.muxer.addSentBytes(uint64(n))
 			}
@@ -340,10 +344,9 @@ func (s *hlsServer) onRequest(ctx *gin.Context) {
 	}
 }
 
-func (s *hlsServer) createMuxer(pathName string, remoteAddr string, req *hlsMuxerRequest) *hlsMuxer {
+func (s *hlsServer) createMuxer(pathName string, remoteAddr string) *hlsMuxer {
 	r := newHLSMuxer(
 		s.ctx,
-		pathName,
 		remoteAddr,
 		s.externalAuthenticationURL,
 		s.alwaysRemux,
@@ -352,8 +355,8 @@ func (s *hlsServer) createMuxer(pathName string, remoteAddr string, req *hlsMuxe
 		s.segmentDuration,
 		s.partDuration,
 		s.segmentMaxSize,
+		s.directory,
 		s.readBufferCount,
-		req,
 		&s.wg,
 		pathName,
 		s.pathManager,

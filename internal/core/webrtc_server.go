@@ -71,7 +71,7 @@ type webRTCServer struct {
 	externalAuthenticationURL string
 	allowOrigin               string
 	trustedProxies            conf.IPsOrCIDRs
-	stunServers               []string
+	iceServers                []string
 	readBufferCount           int
 	pathManager               *pathManager
 	metrics                   *metrics
@@ -107,7 +107,7 @@ func newWebRTCServer(
 	serverCert string,
 	allowOrigin string,
 	trustedProxies conf.IPsOrCIDRs,
-	stunServers []string,
+	iceServers []string,
 	readBufferCount int,
 	pathManager *pathManager,
 	metrics *metrics,
@@ -160,7 +160,7 @@ func newWebRTCServer(
 		externalAuthenticationURL: externalAuthenticationURL,
 		allowOrigin:               allowOrigin,
 		trustedProxies:            trustedProxies,
-		stunServers:               stunServers,
+		iceServers:                iceServers,
 		readBufferCount:           readBufferCount,
 		pathManager:               pathManager,
 		metrics:                   metrics,
@@ -249,7 +249,7 @@ outer:
 				s.readBufferCount,
 				req.pathName,
 				req.wsconn,
-				s.stunServers,
+				s.iceServers,
 				&wg,
 				s.pathManager,
 				s,
@@ -421,7 +421,7 @@ func (s *webRTCServer) newConn(dir string, wsconn *websocket.ServerConn) *webRTC
 }
 
 func (s *webRTCServer) authenticate(pa *path, ctx *gin.Context) error {
-	pathConf := pa.Conf()
+	pathConf := pa.safeConf()
 	pathIPs := pathConf.ReadIPs
 	pathUser := pathConf.ReadUser
 	pathPass := pathConf.ReadPass

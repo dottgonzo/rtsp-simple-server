@@ -17,6 +17,7 @@ import (
 	"github.com/aler9/rtsp-simple-server/internal/externalcmd"
 	"github.com/aler9/rtsp-simple-server/internal/logger"
 	"github.com/aler9/rtsp-simple-server/internal/rlimit"
+	"github.com/aler9/rtsp-simple-server/internal/rpicamera"
 )
 
 var version = "v0.0.0"
@@ -57,7 +58,7 @@ var cli struct {
 // New allocates a core.
 func New(args []string) (*Core, bool) {
 	parser, err := kong.New(&cli,
-		kong.Description("rtsp-simple-server "+version),
+		kong.Description("MediaMTX / rtsp-simple-server "+version),
 		kong.UsageOnError(),
 		kong.ValueFormatter(func(value *kong.Value) string {
 			switch value.Name {
@@ -71,6 +72,7 @@ func New(args []string) (*Core, bool) {
 	if err != nil {
 		panic(err)
 	}
+
 	_, err = parser.Parse(args)
 	parser.FatalIfErrorf(err)
 
@@ -78,13 +80,6 @@ func New(args []string) (*Core, bool) {
 		fmt.Println(version)
 		os.Exit(0)
 	}
-
-	// on Linux, try to raise the number of file descriptors that can be opened
-	// to allow the maximum possible number of clients
-	// do not check for errors
-	rlimit.Raise()
-
-	gin.SetMode(gin.ReleaseMode)
 
 	ctx, ctxCancel := context.WithCancel(context.Background())
 
@@ -203,13 +198,18 @@ func (p *Core) createResources(initial bool) error {
 	}
 
 	if initial {
-		p.Log(logger.Info, "rtsp-simple-server %s", version)
+		p.Log(logger.Info, "MediaMTX / rtsp-simple-server %s", version)
 		if !p.confFound {
 			p.Log(logger.Warn, "configuration file not found, using an empty configuration")
 		}
-	}
 
-	if initial {
+		// on Linux, try to raise the number of file descriptors that can be opened
+		// to allow the maximum possible number of clients
+		// do not check for errors
+		rlimit.Raise()
+
+		gin.SetMode(gin.ReleaseMode)
+
 		p.externalCmdPool = externalcmd.NewPool()
 	}
 
@@ -244,6 +244,7 @@ func (p *Core) createResources(initial bool) error {
 			p.conf.ReadTimeout,
 			p.conf.WriteTimeout,
 			p.conf.ReadBufferCount,
+			p.conf.UDPMaxPayloadSize,
 			p.conf.Paths,
 			p.externalCmdPool,
 			p.metrics,
@@ -400,6 +401,7 @@ func (p *Core) createResources(initial bool) error {
 				p.conf.HLSSegmentMaxSize,
 				p.conf.HLSAllowOrigin,
 				p.conf.HLSTrustedProxies,
+				p.conf.HLSDirectory,
 				p.conf.ReadBufferCount,
 				p.pathManager,
 				p.metrics,
@@ -485,6 +487,7 @@ func (p *Core) closeResources(newConf *conf.Conf, calledByAPI bool) {
 		newConf.ReadTimeout != p.conf.ReadTimeout ||
 		newConf.WriteTimeout != p.conf.WriteTimeout ||
 		newConf.ReadBufferCount != p.conf.ReadBufferCount ||
+		newConf.UDPMaxPayloadSize != p.conf.UDPMaxPayloadSize ||
 		closeMetrics
 	if !closePathManager && !reflect.DeepEqual(newConf.Paths, p.conf.Paths) {
 		p.pathManager.confReload(newConf.Paths)
@@ -575,6 +578,7 @@ func (p *Core) closeResources(newConf *conf.Conf, calledByAPI bool) {
 		newConf.HLSSegmentMaxSize != p.conf.HLSSegmentMaxSize ||
 		newConf.HLSAllowOrigin != p.conf.HLSAllowOrigin ||
 		!reflect.DeepEqual(newConf.HLSTrustedProxies, p.conf.HLSTrustedProxies) ||
+		newConf.HLSDirectory != p.conf.HLSDirectory ||
 		newConf.ReadBufferCount != p.conf.ReadBufferCount ||
 		closePathManager ||
 		closeMetrics
@@ -665,9 +669,13 @@ func (p *Core) closeResources(newConf *conf.Conf, calledByAPI bool) {
 		p.metrics = nil
 	}
 
-	if newConf == nil {
+	if newConf == nil && p.externalCmdPool != nil {
 		p.Log(logger.Info, "waiting for external commands")
 		p.externalCmdPool.Close()
+	}
+
+	if newConf == nil {
+		rpicamera.Cleanup()
 	}
 
 	if closeLogger {

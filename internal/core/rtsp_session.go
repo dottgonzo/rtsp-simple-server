@@ -270,16 +270,18 @@ func (s *rtspSession) onPlay(ctx *gortsplib.ServerHandlerOnPlayCtx) (*base.Respo
 
 	if s.session.State() == gortsplib.ServerSessionStatePrePlay {
 		s.log(logger.Info, "is reading from path '%s', with %s, %s",
-			s.path.Name(),
+			s.path.name,
 			s.session.SetuppedTransport(),
 			sourceMediaInfo(s.session.SetuppedMedias()))
 
-		if s.path.Conf().RunOnRead != "" {
+		pathConf := s.path.safeConf()
+
+		if pathConf.RunOnRead != "" {
 			s.log(logger.Info, "runOnRead command started")
 			s.onReadCmd = externalcmd.NewCmd(
 				s.externalCmdPool,
-				s.path.Conf().RunOnRead,
-				s.path.Conf().RunOnReadRestart,
+				pathConf.RunOnRead,
+				pathConf.RunOnReadRestart,
 				s.path.externalCmdEnv(),
 				func(co int) {
 					s.log(logger.Info, "runOnRead command exited with code %d", co)
@@ -311,7 +313,7 @@ func (s *rtspSession) onRecord(ctx *gortsplib.ServerHandlerOnRecordCtx) (*base.R
 	}
 
 	s.log(logger.Info, "is publishing to path '%s', with %s, %s",
-		s.path.Name(),
+		s.path.name,
 		s.session.SetuppedTransport(),
 		sourceMediaInfo(s.session.AnnouncedMedias()))
 
@@ -325,7 +327,7 @@ func (s *rtspSession) onRecord(ctx *gortsplib.ServerHandlerOnRecordCtx) (*base.R
 			switch forma.(type) {
 			case *format.H264:
 				ctx.Session.OnPacketRTP(medi, forma, func(pkt *rtp.Packet) {
-					err := s.stream.writeData(cmedia, cformat, &formatprocessor.DataH264{
+					err := s.stream.writeData(cmedia, cformat, &formatprocessor.UnitH264{
 						RTPPackets: []*rtp.Packet{pkt},
 						NTP:        time.Now(),
 					})
@@ -336,7 +338,7 @@ func (s *rtspSession) onRecord(ctx *gortsplib.ServerHandlerOnRecordCtx) (*base.R
 
 			case *format.H265:
 				ctx.Session.OnPacketRTP(medi, forma, func(pkt *rtp.Packet) {
-					err := s.stream.writeData(cmedia, cformat, &formatprocessor.DataH265{
+					err := s.stream.writeData(cmedia, cformat, &formatprocessor.UnitH265{
 						RTPPackets: []*rtp.Packet{pkt},
 						NTP:        time.Now(),
 					})
@@ -347,7 +349,7 @@ func (s *rtspSession) onRecord(ctx *gortsplib.ServerHandlerOnRecordCtx) (*base.R
 
 			case *format.VP8:
 				ctx.Session.OnPacketRTP(medi, forma, func(pkt *rtp.Packet) {
-					err := s.stream.writeData(cmedia, cformat, &formatprocessor.DataVP8{
+					err := s.stream.writeData(cmedia, cformat, &formatprocessor.UnitVP8{
 						RTPPackets: []*rtp.Packet{pkt},
 						NTP:        time.Now(),
 					})
@@ -358,7 +360,7 @@ func (s *rtspSession) onRecord(ctx *gortsplib.ServerHandlerOnRecordCtx) (*base.R
 
 			case *format.VP9:
 				ctx.Session.OnPacketRTP(medi, forma, func(pkt *rtp.Packet) {
-					err := s.stream.writeData(cmedia, cformat, &formatprocessor.DataVP9{
+					err := s.stream.writeData(cmedia, cformat, &formatprocessor.UnitVP9{
 						RTPPackets: []*rtp.Packet{pkt},
 						NTP:        time.Now(),
 					})
@@ -369,7 +371,7 @@ func (s *rtspSession) onRecord(ctx *gortsplib.ServerHandlerOnRecordCtx) (*base.R
 
 			case *format.MPEG4Audio:
 				ctx.Session.OnPacketRTP(medi, forma, func(pkt *rtp.Packet) {
-					err := s.stream.writeData(cmedia, cformat, &formatprocessor.DataMPEG4Audio{
+					err := s.stream.writeData(cmedia, cformat, &formatprocessor.UnitMPEG4Audio{
 						RTPPackets: []*rtp.Packet{pkt},
 						NTP:        time.Now(),
 					})
@@ -380,7 +382,7 @@ func (s *rtspSession) onRecord(ctx *gortsplib.ServerHandlerOnRecordCtx) (*base.R
 
 			case *format.Opus:
 				ctx.Session.OnPacketRTP(medi, forma, func(pkt *rtp.Packet) {
-					err := s.stream.writeData(cmedia, cformat, &formatprocessor.DataOpus{
+					err := s.stream.writeData(cmedia, cformat, &formatprocessor.UnitOpus{
 						RTPPackets: []*rtp.Packet{pkt},
 						NTP:        time.Now(),
 					})
@@ -391,7 +393,7 @@ func (s *rtspSession) onRecord(ctx *gortsplib.ServerHandlerOnRecordCtx) (*base.R
 
 			default:
 				ctx.Session.OnPacketRTP(medi, forma, func(pkt *rtp.Packet) {
-					err := s.stream.writeData(cmedia, cformat, &formatprocessor.DataGeneric{
+					err := s.stream.writeData(cmedia, cformat, &formatprocessor.UnitGeneric{
 						RTPPackets: []*rtp.Packet{pkt},
 						NTP:        time.Now(),
 					})

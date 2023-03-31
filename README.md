@@ -1,9 +1,10 @@
+<h1 align="center">
+    <img src="logo.png" alt="MediaMTX / rtsp-simple-server">
+</h1>
 
-<p align="center">
-    <img src="logo.png" alt="rtsp-simple-server">
-</p>
+<br>
 
-_rtsp-simple-server_ is a ready-to-use and zero-dependency server and proxy that allows users to publish, read and proxy live video and audio streams.
+[_MediaMTX_](#important-announcement) / _rtsp-simple-server_ is a ready-to-use and zero-dependency server and proxy that allows users to publish, read and proxy live video and audio streams.
 
 Live streams can be published to the server with:
 
@@ -14,6 +15,7 @@ Live streams can be published to the server with:
 |RTMP clients (OBS Studio)|RTMP, RTMPS|H264, H265, MPEG4 Audio (AAC)|
 |RTMP servers and cameras|RTMP, RTMPS|H264, MPEG4 Audio (AAC)|
 |HLS servers and cameras|Low-Latency HLS, MP4-based HLS, legacy HLS|H264, H265, MPEG4 Audio (AAC), Opus|
+|UDP/MPEG-TS streams|Unicast, broadcast, multicast|H264, H265, MPEG4 Audio (AAC), Opus|
 |Raspberry Pi Cameras||H264|
 
 And can be read from the server with:
@@ -43,16 +45,25 @@ Features:
 
 [![Test](https://github.com/aler9/rtsp-simple-server/workflows/test/badge.svg)](https://github.com/aler9/rtsp-simple-server/actions?query=workflow:test)
 [![Lint](https://github.com/aler9/rtsp-simple-server/workflows/lint/badge.svg)](https://github.com/aler9/rtsp-simple-server/actions?query=workflow:lint)
-[![CodeCov](https://codecov.io/gh/aler9/rtsp-simple-server/branch/main/graph/badge.svg)](https://codecov.io/gh/aler9/rtsp-simple-server/branch/main)
+[![CodeCov](https://codecov.io/gh/aler9/rtsp-simple-server/branch/main/graph/badge.svg)](https://app.codecov.io/gh/aler9/rtsp-simple-server/branch/main)
 [![Release](https://img.shields.io/github/v/release/aler9/rtsp-simple-server)](https://github.com/aler9/rtsp-simple-server/releases)
 [![Docker Hub](https://img.shields.io/badge/docker-aler9/rtsp--simple--server-blue)](https://hub.docker.com/r/aler9/rtsp-simple-server)
 [![API Documentation](https://img.shields.io/badge/api-documentation-blue)](https://aler9.github.io/rtsp-simple-server)
+
+## Important announcement
+
+_rtsp-simple-server_ is being rebranded as _MediaMTX_. The reason is pretty obvious: this project started as a RTSP server but has evolved into a much more versatile media server (i like to call it a "media broker", a message broker for media streams), that is not tied to the RTSP protocol anymore. Nothing will change regarding license, features and backward compatibility.
+
+Furthermore, my main open source projects are being transferred to the [bluenviron organization](https://github.com/bluenviron), in order to allow the community to maintain and evolve the code regardless of my personal availability.
+
+In the next months, the repository name and the docker image name will be changed accordingly.
 
 ## Table of contents
 
 * [Installation](#installation)
   * [Standard](#standard)
   * [Docker](#docker)
+  * [OpenWRT](#openwrt)
 * [Basic usage](#basic-usage)
 * [General](#general)
   * [Configuration](#configuration)
@@ -68,12 +79,13 @@ Features:
   * [HTTP API](#http-api)
   * [Metrics](#metrics)
   * [pprof](#pprof)
-  * [Compile and run from source](#compile-and-run-from-source)
+  * [Compile from source](#compile-from-source)
 * [Publish to the server](#publish-to-the-server)
   * [From a webcam](#from-a-webcam)
   * [From a Raspberry Pi Camera](#from-a-raspberry-pi-camera)
   * [From OBS Studio](#from-obs-studio)
   * [From OpenCV](#from-opencv)
+  * [From a UDP stream](#from-a-udp-stream)
 * [Read from the server](#read-from-the-server)
   * [From VLC and Ubuntu](#from-vlc-and-ubuntu)
 * [RTSP protocol](#rtsp-protocol)
@@ -84,6 +96,7 @@ Features:
   * [Redirect to another server](#redirect-to-another-server)
   * [Fallback stream](#fallback-stream)
   * [Corrupted frames](#corrupted-frames)
+  * [Decrease latency](#decrease-latency)
 * [RTMP protocol](#rtmp-protocol)
   * [General usage](#general-usage-1)
   * [Encryption](#encryption-1)
@@ -92,11 +105,13 @@ Features:
   * [Browser support](#browser-support)
   * [Embedding](#embedding)
   * [Low-Latency variant](#low-latency-variant)
-  * [Decreasing latency](#decreasing-latency)
+  * [Low-Latency variant on Apple devices](#low-latency-variant-on-apple-devices)
+  * [Decrease latency](#decrease-latency-1)
 * [WebRTC protocol](#webrtc-protocol)
   * [General usage](#general-usage-3)
   * [Usage inside a container or behind a NAT](#usage-inside-a-container-or-behind-a-nat)
   * [Embedding](#embedding-1)
+* [Standards](#standards)
 * [Links](#links)
 
 ## Installation
@@ -127,6 +142,38 @@ docker run --rm -it -e RTSP_PROTOCOLS=tcp -p 8554:8554 -p 1935:1935 -p 8888:8888
 
 Please keep in mind that the Docker image doesn't include _FFmpeg_. if you need to use _FFmpeg_ for an external command or anything else, you need to build a Docker image that contains both _rtsp-simple-server_ and _FFmpeg_, by following instructions [here](https://github.com/aler9/rtsp-simple-server/discussions/278#discussioncomment-549104).
 
+### OpenWRT
+
+1. In a x86 Linux system, download the OpenWRT SDK corresponding to the wanted OpenWRT version and target from the [OpenWRT website](https://downloads.openwrt.org/releases/) and extract it.
+
+2. Open a terminal in the SDK folder and setup the SDK:
+
+   ```
+   ./scripts/feeds update -a
+   ./scripts/feeds install -a
+   make defconfig
+   ```
+
+3. Download the server Makefile and set the server version inside the file:
+
+   ```
+   mkdir package/rtsp-simple-server
+   wget -O package/rtsp-simple-server/Makefile https://raw.githubusercontent.com/aler9/rtsp-simple-server/main/openwrt.mk
+   sed -i "s/v0.0.0/$(git ls-remote --tags --sort=v:refname https://github.com/aler9/rtsp-simple-server | tail -n1 | sed 's/.*\///; s/\^{}//')/" package/rtsp-simple-server/Makefile
+   ```
+
+4. Compile the server:
+
+   ```
+   make package/rtsp-simple-server/compile -j$(nproc)
+   ```
+
+5. Transfer the .ipk file from `bin/packages/*/base` to the OpenWRT system and install it with:
+
+   ```
+   opkg install [ipk-file-name].ipk
+   ```
+
 ## Basic usage
 
 1. Publish a stream. For instance, you can publish a video/audio file with _FFmpeg_:
@@ -146,7 +193,7 @@ Please keep in mind that the Docker image doesn't include _FFmpeg_. if you need 
 2. Open the stream. For instance, you can open the stream with _VLC_:
 
    ```
-   vlc rtsp://localhost:8554/mystream
+   vlc --network-caching=50 rtsp://localhost:8554/mystream
    ```
 
    or _GStreamer_:
@@ -512,13 +559,32 @@ go tool pprof -text http://localhost:9999/debug/pprof/heap
 go tool pprof -text http://localhost:9999/debug/pprof/profile?seconds=30
 ```
 
-### Compile and run from source
+### Compile from source
 
-Install Go 1.18, download the repository, open a terminal in it and run:
+#### Standard
+
+Install Go &ge; 1.20, download the repository, open a terminal in it and run:
 
 ```sh
-go run .
+go build .
 ```
+
+The command will produce the `rtsp-simple-server` binary.
+
+#### Raspberry Pi
+
+In case of a Raspberry Pi, the server can be compiled with native support for the Raspberry Pi Camera. Install Go &ge; 1.20, download the repository, open a terminal in it and run:
+
+```sh
+cd internal/rpicamera/exe
+make
+cd ../../../
+go build -tags rpicamera .
+```
+
+The command will produce the `rtsp-simple-server` binary.
+
+#### Compile for all supported platforms
 
 Compilation for all supported platform can be launched by using:
 
@@ -526,15 +592,7 @@ Compilation for all supported platform can be launched by using:
 make binaries
 ```
 
-In order to compile and run with support for the Raspberry Pi Camera:
-
-```sh
-cd internal/rpicamera/exe
-make
-cd ../../../
-go build -tags rpicamera
-./rtsp-simple-server
-```
+The command will produce tarballs in folder `binaries/`.
 
 ## Publish to the server
 
@@ -694,6 +752,26 @@ while True:
 
     sleep(1 / fps)
 ```
+
+### From a UDP stream
+
+The server supports ingesting UDP/MPEG-TS packets (i.e. MPEG-TS packets sent with UDP). Packets can be unicast, broadcast or multicast. For instance, you can generate a multicast UDP/MPEG-TS stream with:
+
+```
+gst-launch-1.0 -v mpegtsmux name=mux alignment=1 ! udpsink host=238.0.0.1 port=1234 \
+videotestsrc ! video/x-raw,width=1280,height=720 ! x264enc speed-preset=ultrafast bitrate=6000 key-int-max=40 ! mux. \
+audiotestsrc ! audioconvert ! avenc_aac ! mux.
+```
+
+Edit `rtsp-simple-server.yml` and replace everything inside section `paths` with the following content:
+
+```yml
+paths:
+  udp:
+    source: udp://238.0.0.1:1234
+```
+
+After starting the server, the stream can be reached on `rtsp://localhost:8554/udp`.
 
 ## Read from the server
 
@@ -860,6 +938,14 @@ In some scenarios, when reading RTSP from the server, decoded frames can be corr
 
 * The stream throughput is too big to be handled by the network between server and readers. Upgrade the network or decrease the stream bitrate by re-encoding it.
 
+### Decrease latency
+
+The RTSP protocol doesn't introduce any latency by itself. Latency is usually introduced by clients, that put frames in a buffer to compensate network fluctuations. In order to decrease latency, the best way consists in tuning the client. For instance, latency can be decreased with VLC by decreasing the `Network caching` parameter, that is available in the `Open network stream` dialog or alternatively ca be set with the command line:
+
+```
+vlc --network-caching=50 rtsp://...
+```
+
 ## RTMP protocol
 
 ### General usage
@@ -949,7 +1035,27 @@ For more advanced options, you can create and serve a custom web page by startin
 
 Low-Latency HLS is a [recently standardized](https://datatracker.ietf.org/doc/html/draft-pantos-hls-rfc8216bis) variant of the protocol that allows to greatly reduce playback latency. It works by splitting segments into parts, that are served before the segment is complete.
 
-LL-HLS is disabled by default. To enable it, a TLS certificate is needed and can be generated with OpenSSL:
+LL-HLS is disabled by default. To enable it, set the `hlsVariant` parameter in the configuration file:
+
+```yml
+hlsVariant: lowLatency
+```
+
+Every stream published to the server can be read with LL-HLS by visiting:
+
+```
+https://localhost:8888/mystream
+```
+
+If the stream is not shown correctly, try tuning the `hlsPartDuration` parameter, for instance:
+
+```yml
+hlsPartDuration: 500ms
+```
+
+### Low-Latency variant on Apple devices
+
+In order to correctly display Low-Latency HLS streams in Safari running on Apple devices (iOS or macOS), a TLS certificate is needed and can be generated with OpenSSL:
 
 ```
 openssl genrsa -out server.key 2048
@@ -965,19 +1071,7 @@ hlsServerKey: server.key
 hlsServerCert: server.crt
 ```
 
-Every stream published to the server can be read with LL-HLS by visiting:
-
-```
-https://localhost:8888/mystream
-```
-
-If the stream is not shown correctly, try tuning the `hlsPartDuration` parameter, for instance:
-
-```yml
-hlsPartDuration: 500ms
-```
-
-### Decreasing latency
+### Decrease latency
 
 in HLS, latency is introduced since a client must wait for the server to generate segments before downloading them. This latency amounts to 1-15secs depending on the duration of each segment, and to 500ms-3s if the Low-Latency variant is enabled.
 
@@ -1052,15 +1146,15 @@ rtsp-simple-server
 Finally, if none of these methods work, you can force all WebRTC/ICE connections to pass through a TURN server, like [coturn](https://github.com/coturn/coturn), that must be configured externally. The server address and credentials must be set in the configuration file:
 
 ```yml
-webrtcICEServers: [turn:user:pass:host:ip]
+webrtcICEServers: [turn:user:pass:host:port]
 ```
 
-Where `user` and `pass` are the username and password of the server.
+Where `user` and `pass` are the username and password of the server.  Note that `port` is not optional.
 
 If the server uses a secret-based authentication (for instance, coturn with the `use-auth-secret` option), it must be configured in this way:
 
 ```yml
-webrtcICEServers: [turn:AUTH_SECRET:secret:host:ip]
+webrtcICEServers: [turn:AUTH_SECRET:secret:host:port]
 ```
 
 where `secret` is the secret of the TURN server. _rtsp-simple-server_ will generate a set of credentials by using the secret, and credentials will be sent to clients before the WebRTC/ICE connection is established.
@@ -1075,24 +1169,23 @@ The simples way to embed a WebRTC stream into a web page consists in using an if
 
 For more advanced options, you can create and serve a custom web page by starting from the [source code of the default page](internal/core/webrtc_index.html).
 
+## Standards
+
+* RTSP/RTP/RTCP standards https://github.com/aler9/gortsplib#standards
+* HLS standards https://github.com/bluenviron/gohlslib#standards
+* Golang project layout https://github.com/golang-standards/project-layout
+
 ## Links
 
 Related projects
 
 * gortsplib (RTSP library used internally) https://github.com/aler9/gortsplib
+* gohlslib (HLS library used internally) https://github.com/bluenviron/gohlslib
 * pion/sdp (SDP library used internally) https://github.com/pion/sdp
 * pion/rtp (RTP library used internally) https://github.com/pion/rtp
 * pion/rtcp (RTCP library used internally) https://github.com/pion/rtcp
+* pion/webrtc (WebRTC library used internally) https://github.com/pion/webrtc
 * notedit/rtmp (RTMP library used internally) https://github.com/notedit/rtmp
 * go-astits (MPEG-TS library used internally) https://github.com/asticode/go-astits
 * go-mp4 (MP4 library used internally) https://github.com/abema/go-mp4
 * https://github.com/flaviostutz/rtsp-relay
-
-Standards
-
-* RTSP/RTP standards https://github.com/aler9/gortsplib#links
-* HTTP 1.1 https://datatracker.ietf.org/doc/html/rfc2616
-* HLS https://datatracker.ietf.org/doc/html/rfc8216
-* HLS v2 https://datatracker.ietf.org/doc/html/draft-pantos-hls-rfc8216bis
-* Opus in MP4/ISOBMFF https://opus-codec.org/docs/opus_in_isobmff.html
-* Golang project layout https://github.com/golang-standards/project-layout

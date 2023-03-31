@@ -66,7 +66,7 @@ type webRTCTrack struct {
 	media       *media.Media
 	format      format.Format
 	webRTCTrack *webrtc.TrackLocalStaticRTP
-	cb          func(formatprocessor.Data, context.Context, chan error)
+	cb          func(formatprocessor.Unit, context.Context, chan error)
 }
 
 func gatherMedias(tracks []*webRTCTrack) media.Medias {
@@ -345,8 +345,12 @@ func (c *webRTCConn) runInner(ctx context.Context) error {
 	pcConnected := make(chan struct{})
 	pcDisconnected := make(chan struct{})
 	pcClosed := make(chan struct{})
+	var stateChangeMutex sync.Mutex
 
 	pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
+		stateChangeMutex.Lock()
+		defer stateChangeMutex.Unlock()
+
 		select {
 		case <-pcClosed:
 			return
@@ -498,16 +502,16 @@ outer:
 
 	for _, track := range tracks {
 		ctrack := track
-		res.stream.readerAdd(c, track.media, track.format, func(dat formatprocessor.Data) {
+		res.stream.readerAdd(c, track.media, track.format, func(unit formatprocessor.Unit) {
 			ringBuffer.Push(func() {
-				ctrack.cb(dat, ctx, writeError)
+				ctrack.cb(unit, ctx, writeError)
 			})
 		})
 	}
 	defer res.stream.readerRemove(c)
 
 	c.log(logger.Info, "is reading from path '%s', %s",
-		path.Name(), sourceMediaInfo(gatherMedias(tracks)))
+		path.name, sourceMediaInfo(gatherMedias(tracks)))
 
 	go func() {
 		for {
@@ -563,14 +567,14 @@ func (c *webRTCConn) allocateTracks(medias media.Medias) ([]*webRTCTrack, error)
 			media:       vp9Media,
 			format:      vp9Format,
 			webRTCTrack: webRTCTrak,
-			cb: func(dat formatprocessor.Data, ctx context.Context, writeError chan error) {
-				tdata := dat.(*formatprocessor.DataVP9)
+			cb: func(unit formatprocessor.Unit, ctx context.Context, writeError chan error) {
+				tunit := unit.(*formatprocessor.UnitVP9)
 
-				if tdata.Frame == nil {
+				if tunit.Frame == nil {
 					return
 				}
 
-				packets, err := encoder.Encode(tdata.Frame, tdata.PTS)
+				packets, err := encoder.Encode(tunit.Frame, tunit.PTS)
 				if err != nil {
 					return
 				}
@@ -610,14 +614,14 @@ func (c *webRTCConn) allocateTracks(medias media.Medias) ([]*webRTCTrack, error)
 				media:       vp8Media,
 				format:      vp8Format,
 				webRTCTrack: webRTCTrak,
-				cb: func(dat formatprocessor.Data, ctx context.Context, writeError chan error) {
-					tdata := dat.(*formatprocessor.DataVP8)
+				cb: func(unit formatprocessor.Unit, ctx context.Context, writeError chan error) {
+					tunit := unit.(*formatprocessor.UnitVP8)
 
-					if tdata.Frame == nil {
+					if tunit.Frame == nil {
 						return
 					}
 
-					packets, err := encoder.Encode(tdata.Frame, tdata.PTS)
+					packets, err := encoder.Encode(tunit.Frame, tunit.PTS)
 					if err != nil {
 						return
 					}
@@ -660,28 +664,28 @@ func (c *webRTCConn) allocateTracks(medias media.Medias) ([]*webRTCTrack, error)
 				media:       h264Media,
 				format:      h264Format,
 				webRTCTrack: webRTCTrak,
-				cb: func(dat formatprocessor.Data, ctx context.Context, writeError chan error) {
-					tdata := dat.(*formatprocessor.DataH264)
+				cb: func(unit formatprocessor.Unit, ctx context.Context, writeError chan error) {
+					tunit := unit.(*formatprocessor.UnitH264)
 
-					if tdata.AU == nil {
+					if tunit.AU == nil {
 						return
 					}
 
 					if !firstNALUReceived {
 						firstNALUReceived = true
-						lastPTS = tdata.PTS
+						lastPTS = tunit.PTS
 					} else {
-						if tdata.PTS < lastPTS {
+						if tunit.PTS < lastPTS {
 							select {
 							case writeError <- fmt.Errorf("WebRTC doesn't support H264 streams with B-frames"):
 							case <-ctx.Done():
 							}
 							return
 						}
-						lastPTS = tdata.PTS
+						lastPTS = tunit.PTS
 					}
 
-					packets, err := encoder.Encode(tdata.AU, tdata.PTS)
+					packets, err := encoder.Encode(tunit.AU, tunit.PTS)
 					if err != nil {
 						return
 					}
@@ -714,8 +718,8 @@ func (c *webRTCConn) allocateTracks(medias media.Medias) ([]*webRTCTrack, error)
 			media:       opusMedia,
 			format:      opusFormat,
 			webRTCTrack: webRTCTrak,
-			cb: func(dat formatprocessor.Data, ctx context.Context, writeError chan error) {
-				for _, pkt := range dat.GetRTPPackets() {
+			cb: func(unit formatprocessor.Unit, ctx context.Context, writeError chan error) {
+				for _, pkt := range unit.GetRTPPackets() {
 					webRTCTrak.WriteRTP(pkt)
 				}
 			},
@@ -744,8 +748,8 @@ func (c *webRTCConn) allocateTracks(medias media.Medias) ([]*webRTCTrack, error)
 				media:       g722Media,
 				format:      g722Format,
 				webRTCTrack: webRTCTrak,
-				cb: func(dat formatprocessor.Data, ctx context.Context, writeError chan error) {
-					for _, pkt := range dat.GetRTPPackets() {
+				cb: func(unit formatprocessor.Unit, ctx context.Context, writeError chan error) {
+					for _, pkt := range unit.GetRTPPackets() {
 						webRTCTrak.WriteRTP(pkt)
 					}
 				},
@@ -782,8 +786,8 @@ func (c *webRTCConn) allocateTracks(medias media.Medias) ([]*webRTCTrack, error)
 				media:       g711Media,
 				format:      g711Format,
 				webRTCTrack: webRTCTrak,
-				cb: func(dat formatprocessor.Data, ctx context.Context, writeError chan error) {
-					for _, pkt := range dat.GetRTPPackets() {
+				cb: func(unit formatprocessor.Unit, ctx context.Context, writeError chan error) {
+					for _, pkt := range unit.GetRTPPackets() {
 						webRTCTrak.WriteRTP(pkt)
 					}
 				},

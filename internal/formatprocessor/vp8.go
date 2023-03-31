@@ -9,36 +9,39 @@ import (
 	"github.com/pion/rtp"
 )
 
-// DataVP8 is a VP8 data unit.
-type DataVP8 struct {
+// UnitVP8 is a VP8 data unit.
+type UnitVP8 struct {
 	RTPPackets []*rtp.Packet
 	NTP        time.Time
 	PTS        time.Duration
 	Frame      []byte
 }
 
-// GetRTPPackets implements Data.
-func (d *DataVP8) GetRTPPackets() []*rtp.Packet {
+// GetRTPPackets implements Unit.
+func (d *UnitVP8) GetRTPPackets() []*rtp.Packet {
 	return d.RTPPackets
 }
 
-// GetNTP implements Data.
-func (d *DataVP8) GetNTP() time.Time {
+// GetNTP implements Unit.
+func (d *UnitVP8) GetNTP() time.Time {
 	return d.NTP
 }
 
 type formatProcessorVP8 struct {
-	format  *format.VP8
-	encoder *rtpvp8.Encoder
-	decoder *rtpvp8.Decoder
+	udpMaxPayloadSize int
+	format            *format.VP8
+	encoder           *rtpvp8.Encoder
+	decoder           *rtpvp8.Decoder
 }
 
 func newVP8(
+	udpMaxPayloadSize int,
 	forma *format.VP8,
 	allocateEncoder bool,
 ) (*formatProcessorVP8, error) {
 	t := &formatProcessorVP8{
-		format: forma,
+		udpMaxPayloadSize: udpMaxPayloadSize,
+		format:            forma,
 	}
 
 	if allocateEncoder {
@@ -48,19 +51,19 @@ func newVP8(
 	return t, nil
 }
 
-func (t *formatProcessorVP8) Process(dat Data, hasNonRTSPReaders bool) error { //nolint:dupl
-	tdata := dat.(*DataVP8)
+func (t *formatProcessorVP8) Process(unit Unit, hasNonRTSPReaders bool) error { //nolint:dupl
+	tunit := unit.(*UnitVP8)
 
-	if tdata.RTPPackets != nil {
-		pkt := tdata.RTPPackets[0]
+	if tunit.RTPPackets != nil {
+		pkt := tunit.RTPPackets[0]
 
 		// remove padding
 		pkt.Header.Padding = false
 		pkt.PaddingSize = 0
 
-		if pkt.MarshalSize() > maxPacketSize {
+		if pkt.MarshalSize() > t.udpMaxPayloadSize {
 			return fmt.Errorf("payload size (%d) is greater than maximum allowed (%d)",
-				pkt.MarshalSize(), maxPacketSize)
+				pkt.MarshalSize(), t.udpMaxPayloadSize)
 		}
 
 		// decode from RTP
@@ -69,7 +72,7 @@ func (t *formatProcessorVP8) Process(dat Data, hasNonRTSPReaders bool) error { /
 				t.decoder = t.format.CreateDecoder()
 			}
 
-			frame, PTS, err := t.decoder.Decode(pkt)
+			frame, pts, err := t.decoder.Decode(pkt)
 			if err != nil {
 				if err == rtpvp8.ErrMorePacketsNeeded {
 					return nil
@@ -77,19 +80,19 @@ func (t *formatProcessorVP8) Process(dat Data, hasNonRTSPReaders bool) error { /
 				return err
 			}
 
-			tdata.Frame = frame
-			tdata.PTS = PTS
+			tunit.Frame = frame
+			tunit.PTS = pts
 		}
 
 		// route packet as is
 		return nil
 	}
 
-	pkts, err := t.encoder.Encode(tdata.Frame, tdata.PTS)
+	pkts, err := t.encoder.Encode(tunit.Frame, tunit.PTS)
 	if err != nil {
 		return err
 	}
 
-	tdata.RTPPackets = pkts
+	tunit.RTPPackets = pkts
 	return nil
 }

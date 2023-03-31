@@ -11,6 +11,8 @@ info:
 servers:
   - url: http://localhost:9997
 
+security: []
+
 components:
   schemas:
     Conf:
@@ -30,6 +32,8 @@ components:
         writeTimeout:
           type: string
         readBufferCount:
+          type: integer
+        udpMaxPayloadSize:
           type: integer
         externalAuthenticationURL:
           type: string
@@ -125,6 +129,8 @@ components:
           type: array
           items:
             type: string
+        hlsDirectory:
+          type: string
 
         # WebRTC
         webrtcDisable:
@@ -187,11 +193,11 @@ components:
         fallback:
           type: string
         rpiCameraCamID:
-          type: number
+          type: integer
         rpiCameraWidth:
-          type: number
+          type: integer
         rpiCameraHeight:
-          type: number
+          type: integer
         rpiCameraHFlip:
           type: boolean
         rpiCameraVFlip:
@@ -211,7 +217,7 @@ components:
         rpiCameraDenoise:
           type: string
         rpiCameraShutter:
-          type: number
+          type: integer
         rpiCameraMetering:
           type: string
         rpiCameraGain:
@@ -225,14 +231,24 @@ components:
         rpiCameraMode:
           type: string
         rpiCameraFPS:
-          type: number
+          type: integer
         rpiCameraIDRPeriod:
-          type: number
+          type: integer
         rpiCameraBitrate:
-          type: number
+          type: integer
         rpiCameraProfile:
           type: string
         rpiCameraLevel:
+          type: string
+        rpiCameraAfMode:
+          type: string
+        rpiCameraAfRange:
+          type: string
+        rpiCameraAfSpeed:
+          type: string
+        rpiCameraLensPosition:
+          type: number
+        rpiCameraAfWindow:
           type: string
 
         # authentication
@@ -299,7 +315,8 @@ components:
           items:
             type: string
         bytesReceived:
-          type: number
+          type: integer
+          format: int64
         readers:
           type: array
           items:
@@ -435,9 +452,11 @@ components:
         remoteAddr:
           type: string
         bytesReceived:
-          type: number
+          type: integer
+          format: int64
         bytesSent:
-          type: number
+          type: integer
+          format: int64
 
     RTSPSession:
       type: object
@@ -450,9 +469,11 @@ components:
           type: string
           enum: [idle, read, publish]
         bytesReceived:
-          type: number
+          type: integer
+          format: int64
         bytesSent:
-          type: number
+          type: integer
+          format: int64
 
     RTMPConn:
       type: object
@@ -465,9 +486,11 @@ components:
           type: string
           enum: [idle, read, publish]
         bytesReceived:
-          type: number
+          type: integer
+          format: int64
         bytesSent:
-          type: number
+          type: integer
+          format: int64
 
     HLSMuxer:
       type: object
@@ -477,7 +500,8 @@ components:
         lastRequest:
           type: string
         bytesSent:
-          type: number
+          type: integer
+          format: int64
 
     HLSMuxersList:
       type: object
@@ -511,14 +535,6 @@ components:
           additionalProperties:
             $ref: '#/components/schemas/RTSPConn'
 
-    RTSPSConnsList:
-      type: object
-      properties:
-        items:
-          type: object
-          additionalProperties:
-            $ref: '#/components/schemas/RTSPConn'
-
     RTSPSessionsList:
       type: object
       properties:
@@ -541,9 +557,11 @@ components:
         remoteCandidate:
           type: string
         bytesReceived:
-          type: number
+          type: integer
+          format: int64
         bytesSent:
-          type: number
+          type: integer
+          format: int64
 
     WebRTCConnsList:
       type: object

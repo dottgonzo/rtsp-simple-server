@@ -278,24 +278,24 @@ func (c *rtmpConn) runRead(ctx context.Context, u *url.URL) error {
 		var videoStartPTS time.Duration
 		var videoDTSExtractor *h264.DTSExtractor
 
-		res.stream.readerAdd(c, videoMedia, videoFormat, func(dat formatprocessor.Data) {
+		res.stream.readerAdd(c, videoMedia, videoFormat, func(unit formatprocessor.Unit) {
 			ringBuffer.Push(func() error {
-				tdata := dat.(*formatprocessor.DataH264)
+				tunit := unit.(*formatprocessor.UnitH264)
 
-				if tdata.AU == nil {
+				if tunit.AU == nil {
 					return nil
 				}
 
 				if !videoStartPTSFilled {
 					videoStartPTSFilled = true
-					videoStartPTS = tdata.PTS
+					videoStartPTS = tunit.PTS
 				}
-				pts := tdata.PTS - videoStartPTS
+				pts := tunit.PTS - videoStartPTS
 
 				idrPresent := false
 				nonIDRPresent := false
 
-				for _, nalu := range tdata.AU {
+				for _, nalu := range tunit.AU {
 					typ := h264.NALUType(nalu[0] & 0x1F)
 					switch typ {
 					case h264.NALUTypeIDR:
@@ -318,7 +318,7 @@ func (c *rtmpConn) runRead(ctx context.Context, u *url.URL) error {
 					videoDTSExtractor = h264.NewDTSExtractor()
 
 					var err error
-					dts, err = videoDTSExtractor.Extract(tdata.AU, pts)
+					dts, err = videoDTSExtractor.Extract(tunit.AU, pts)
 					if err != nil {
 						return err
 					}
@@ -332,7 +332,7 @@ func (c *rtmpConn) runRead(ctx context.Context, u *url.URL) error {
 					}
 
 					var err error
-					dts, err = videoDTSExtractor.Extract(tdata.AU, pts)
+					dts, err = videoDTSExtractor.Extract(tunit.AU, pts)
 					if err != nil {
 						return err
 					}
@@ -341,7 +341,7 @@ func (c *rtmpConn) runRead(ctx context.Context, u *url.URL) error {
 					pts -= videoStartDTS
 				}
 
-				avcc, err := h264.AVCCMarshal(tdata.AU)
+				avcc, err := h264.AVCCMarshal(tunit.AU)
 				if err != nil {
 					return err
 				}
@@ -371,19 +371,19 @@ func (c *rtmpConn) runRead(ctx context.Context, u *url.URL) error {
 		audioStartPTSFilled := false
 		var audioStartPTS time.Duration
 
-		res.stream.readerAdd(c, audioMedia, audioFormat, func(dat formatprocessor.Data) {
+		res.stream.readerAdd(c, audioMedia, audioFormat, func(unit formatprocessor.Unit) {
 			ringBuffer.Push(func() error {
-				tdata := dat.(*formatprocessor.DataMPEG4Audio)
+				tunit := unit.(*formatprocessor.UnitMPEG4Audio)
 
-				if tdata.AUs == nil {
+				if tunit.AUs == nil {
 					return nil
 				}
 
 				if !audioStartPTSFilled {
 					audioStartPTSFilled = true
-					audioStartPTS = tdata.PTS
+					audioStartPTS = tunit.PTS
 				}
-				pts := tdata.PTS - audioStartPTS
+				pts := tunit.PTS - audioStartPTS
 
 				if videoFormat != nil {
 					if !videoFirstIDRFound {
@@ -396,7 +396,7 @@ func (c *rtmpConn) runRead(ctx context.Context, u *url.URL) error {
 					}
 				}
 
-				for i, au := range tdata.AUs {
+				for i, au := range tunit.AUs {
 					c.nconn.SetWriteDeadline(time.Now().Add(time.Duration(c.writeTimeout)))
 					err := c.conn.WriteMessage(&message.MsgAudio{
 						ChunkStreamID:   message.MsgAudioChunkStreamID,
@@ -422,14 +422,16 @@ func (c *rtmpConn) runRead(ctx context.Context, u *url.URL) error {
 	defer res.stream.readerRemove(c)
 
 	c.log(logger.Info, "is reading from path '%s', %s",
-		path.Name(), sourceMediaInfo(medias))
+		path.name, sourceMediaInfo(medias))
 
-	if path.Conf().RunOnRead != "" {
+	pathConf := path.safeConf()
+
+	if pathConf.RunOnRead != "" {
 		c.log(logger.Info, "runOnRead command started")
 		onReadCmd := externalcmd.NewCmd(
 			c.externalCmdPool,
-			path.Conf().RunOnRead,
-			path.Conf().RunOnReadRestart,
+			pathConf.RunOnRead,
+			pathConf.RunOnReadRestart,
 			path.externalCmdEnv(),
 			func(co int) {
 				c.log(logger.Info, "runOnRead command exited with code %d", co)
@@ -530,7 +532,7 @@ func (c *rtmpConn) runPublish(ctx context.Context, u *url.URL) error {
 	}
 
 	c.log(logger.Info, "is publishing to path '%s', %s",
-		path.Name(),
+		path.name,
 		sourceMediaInfo(medias))
 
 	// disable write deadline to allow outgoing acknowledges
@@ -540,7 +542,7 @@ func (c *rtmpConn) runPublish(ctx context.Context, u *url.URL) error {
 
 	if _, ok := videoFormat.(*format.H264); ok {
 		onVideoData = func(pts time.Duration, au [][]byte) {
-			err = rres.stream.writeData(videoMedia, videoFormat, &formatprocessor.DataH264{
+			err = rres.stream.writeData(videoMedia, videoFormat, &formatprocessor.UnitH264{
 				PTS: pts,
 				AU:  au,
 				NTP: time.Now(),
@@ -551,7 +553,7 @@ func (c *rtmpConn) runPublish(ctx context.Context, u *url.URL) error {
 		}
 	} else {
 		onVideoData = func(pts time.Duration, au [][]byte) {
-			err = rres.stream.writeData(videoMedia, videoFormat, &formatprocessor.DataH265{
+			err = rres.stream.writeData(videoMedia, videoFormat, &formatprocessor.UnitH265{
 				PTS: pts,
 				AU:  au,
 				NTP: time.Now(),
@@ -571,6 +573,10 @@ func (c *rtmpConn) runPublish(ctx context.Context, u *url.URL) error {
 
 		switch tmsg := msg.(type) {
 		case *message.MsgVideo:
+			if videoFormat == nil {
+				return fmt.Errorf("received a video packet, but track is not set up")
+			}
+
 			if tmsg.H264Type == flvio.AVC_SEQHDR {
 				var conf h264conf.Conf
 				err = conf.Unmarshal(tmsg.Payload)
@@ -583,7 +589,7 @@ func (c *rtmpConn) runPublish(ctx context.Context, u *url.URL) error {
 					conf.PPS,
 				}
 
-				err := rres.stream.writeData(videoMedia, videoFormat, &formatprocessor.DataH264{
+				err := rres.stream.writeData(videoMedia, videoFormat, &formatprocessor.UnitH264{
 					PTS: tmsg.DTS + tmsg.PTSDelta,
 					AU:  au,
 					NTP: time.Now(),
@@ -592,10 +598,6 @@ func (c *rtmpConn) runPublish(ctx context.Context, u *url.URL) error {
 					c.log(logger.Warn, "%v", err)
 				}
 			} else if tmsg.H264Type == flvio.AVC_NALU {
-				if videoFormat == nil {
-					return fmt.Errorf("received a video packet, but track is not set up")
-				}
-
 				au, err := h264.AVCCUnmarshal(tmsg.Payload)
 				if err != nil {
 					c.log(logger.Warn, "unable to decode AVCC: %v", err)
@@ -606,12 +608,12 @@ func (c *rtmpConn) runPublish(ctx context.Context, u *url.URL) error {
 			}
 
 		case *message.MsgAudio:
-			if tmsg.AACType == flvio.AAC_RAW {
-				if audioFormat == nil {
-					return fmt.Errorf("received an audio packet, but track is not set up")
-				}
+			if audioFormat == nil {
+				return fmt.Errorf("received an audio packet, but track is not set up")
+			}
 
-				err := rres.stream.writeData(audioMedia, audioFormat, &formatprocessor.DataMPEG4Audio{
+			if tmsg.AACType == flvio.AAC_RAW {
+				err := rres.stream.writeData(audioMedia, audioFormat, &formatprocessor.UnitMPEG4Audio{
 					PTS: tmsg.DTS,
 					AUs: [][]byte{tmsg.Payload},
 					NTP: time.Now(),

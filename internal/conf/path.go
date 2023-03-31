@@ -3,7 +3,9 @@ package conf
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	gourl "net/url"
+	"reflect"
 	"regexp"
 	"strings"
 	"time"
@@ -73,6 +75,11 @@ type PathConf struct {
 	RPICameraBitrate           int            `json:"rpiCameraBitrate"`
 	RPICameraProfile           string         `json:"rpiCameraProfile"`
 	RPICameraLevel             string         `json:"rpiCameraLevel"`
+	RPICameraAfMode            string         `json:"rpiCameraAfMode"`
+	RPICameraAfRange           string         `json:"rpiCameraAfRange"`
+	RPICameraAfSpeed           string         `json:"rpiCameraAfSpeed"`
+	RPICameraLensPosition      float64        `json:"rpiCameraLensPosition"`
+	RPICameraAfWindow          string         `json:"rpiCameraAfWindow"`
 
 	// authentication
 	PublishUser Credential `json:"publishUser"`
@@ -173,6 +180,21 @@ func (pconf *PathConf) checkAndFillMissing(conf *Conf, name string) error {
 			}
 		}
 
+	case strings.HasPrefix(pconf.Source, "udp://"):
+		if pconf.Regexp != nil {
+			return fmt.Errorf("a path with a regular expression (or path 'all') cannot have a HLS source. use another path")
+		}
+
+		host, _, err := net.SplitHostPort(pconf.Source[len("udp://"):])
+		if err != nil {
+			return fmt.Errorf("'%s' is not a valid UDP URL", pconf.Source)
+		}
+
+		ip := net.ParseIP(host)
+		if ip == nil {
+			return fmt.Errorf("'%s' is not a valid IP", host)
+		}
+
 	case pconf.Source == "redirect":
 		if pconf.SourceRedirect == "" {
 			return fmt.Errorf("source redirect must be filled")
@@ -190,8 +212,10 @@ func (pconf *PathConf) checkAndFillMissing(conf *Conf, name string) error {
 		}
 
 		for otherName, otherPath := range conf.Paths {
-			if otherPath != pconf && otherPath != nil && otherPath.Source == "rpiCamera" {
-				return fmt.Errorf("'rpiCamera' is used as source in two paths ('%s' and '%s')", name, otherName)
+			if otherPath != pconf && otherPath != nil &&
+				otherPath.Source == "rpiCamera" && otherPath.RPICameraCamID == pconf.RPICameraCamID {
+				return fmt.Errorf("'rpiCamera' with same camera ID %d is used as source in two paths, '%s' and '%s'",
+					pconf.RPICameraCamID, name, otherName)
 			}
 		}
 
@@ -315,7 +339,43 @@ func (pconf *PathConf) checkAndFillMissing(conf *Conf, name string) error {
 
 // Equal checks whether two PathConfs are equal.
 func (pconf *PathConf) Equal(other *PathConf) bool {
-	a, _ := json.Marshal(pconf)
-	b, _ := json.Marshal(other)
-	return string(a) == string(b)
+	return reflect.DeepEqual(pconf, other)
+}
+
+// Clone clones the configuration.
+func (pconf PathConf) Clone() *PathConf {
+	enc, err := json.Marshal(pconf)
+	if err != nil {
+		panic(err)
+	}
+
+	var dest PathConf
+	err = json.Unmarshal(enc, &dest)
+	if err != nil {
+		panic(err)
+	}
+
+	return &dest
+}
+
+// HasStaticSource checks whether the path has a static source.
+func (pconf PathConf) HasStaticSource() bool {
+	return strings.HasPrefix(pconf.Source, "rtsp://") ||
+		strings.HasPrefix(pconf.Source, "rtsps://") ||
+		strings.HasPrefix(pconf.Source, "rtmp://") ||
+		strings.HasPrefix(pconf.Source, "rtmps://") ||
+		strings.HasPrefix(pconf.Source, "http://") ||
+		strings.HasPrefix(pconf.Source, "https://") ||
+		strings.HasPrefix(pconf.Source, "udp://") ||
+		pconf.Source == "rpiCamera"
+}
+
+// HasOnDemandStaticSource checks whether the path has a on demand static source.
+func (pconf PathConf) HasOnDemandStaticSource() bool {
+	return pconf.HasStaticSource() && pconf.SourceOnDemand
+}
+
+// HasOnDemandPublisher checks whether the path has a on-demand publisher.
+func (pconf PathConf) HasOnDemandPublisher() bool {
+	return pconf.RunOnDemand != ""
 }

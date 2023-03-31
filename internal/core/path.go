@@ -187,20 +187,22 @@ type pathAPIPathsListSubReq struct {
 }
 
 type path struct {
-	rtspAddress     string
-	readTimeout     conf.StringDuration
-	writeTimeout    conf.StringDuration
-	readBufferCount int
-	confName        string
-	conf            *conf.PathConf
-	name            string
-	matches         []string
-	wg              *sync.WaitGroup
-	externalCmdPool *externalcmd.Pool
-	parent          pathParent
+	rtspAddress       string
+	readTimeout       conf.StringDuration
+	writeTimeout      conf.StringDuration
+	readBufferCount   int
+	udpMaxPayloadSize int
+	confName          string
+	conf              *conf.PathConf
+	name              string
+	matches           []string
+	wg                *sync.WaitGroup
+	externalCmdPool   *externalcmd.Pool
+	parent            pathParent
 
 	ctx                            context.Context
 	ctxCancel                      func()
+	confMutex                      sync.RWMutex
 	source                         source
 	bytesReceived                  *uint64
 	stream                         *stream
@@ -217,6 +219,7 @@ type path struct {
 	onDemandPublisherCloseTimer    *time.Timer
 
 	// in
+	chReloadConf              chan *conf.PathConf
 	chSourceStaticSetReady    chan pathSourceStaticSetReadyReq
 	chSourceStaticSetNotReady chan pathSourceStaticSetNotReadyReq
 	chDescribe                chan pathDescribeReq
@@ -227,6 +230,9 @@ type path struct {
 	chReaderAdd               chan pathReaderAddReq
 	chReaderRemove            chan pathReaderRemoveReq
 	chAPIPathsList            chan pathAPIPathsListSubReq
+
+	// out
+	done chan struct{}
 }
 
 func newPath(
@@ -235,8 +241,9 @@ func newPath(
 	readTimeout conf.StringDuration,
 	writeTimeout conf.StringDuration,
 	readBufferCount int,
+	udpMaxPayloadSize int,
 	confName string,
-	conf *conf.PathConf,
+	cnf *conf.PathConf,
 	name string,
 	matches []string,
 	wg *sync.WaitGroup,
@@ -250,8 +257,9 @@ func newPath(
 		readTimeout:                    readTimeout,
 		writeTimeout:                   writeTimeout,
 		readBufferCount:                readBufferCount,
+		udpMaxPayloadSize:              udpMaxPayloadSize,
 		confName:                       confName,
-		conf:                           conf,
+		conf:                           cnf,
 		name:                           name,
 		matches:                        matches,
 		wg:                             wg,
@@ -265,6 +273,7 @@ func newPath(
 		onDemandStaticSourceCloseTimer: newEmptyTimer(),
 		onDemandPublisherReadyTimer:    newEmptyTimer(),
 		onDemandPublisherCloseTimer:    newEmptyTimer(),
+		chReloadConf:                   make(chan *conf.PathConf),
 		chSourceStaticSetReady:         make(chan pathSourceStaticSetReadyReq),
 		chSourceStaticSetNotReady:      make(chan pathSourceStaticSetNotReadyReq),
 		chDescribe:                     make(chan pathDescribeReq),
@@ -275,6 +284,7 @@ func newPath(
 		chReaderAdd:                    make(chan pathReaderAddReq),
 		chReaderRemove:                 make(chan pathReaderRemoveReq),
 		chAPIPathsList:                 make(chan pathAPIPathsListSubReq),
+		done:                           make(chan struct{}),
 	}
 
 	pa.log(logger.Debug, "created")
@@ -289,50 +299,28 @@ func (pa *path) close() {
 	pa.ctxCancel()
 }
 
+func (pa *path) wait() {
+	<-pa.done
+}
+
 // Log is the main logging function.
 func (pa *path) log(level logger.Level, format string, args ...interface{}) {
 	pa.parent.log(level, "[path "+pa.name+"] "+format, args...)
 }
 
-// ConfName returns the configuration name of this path.
-func (pa *path) ConfName() string {
-	return pa.confName
-}
-
-// Conf returns the configuration of this path.
-func (pa *path) Conf() *conf.PathConf {
+func (pa *path) safeConf() *conf.PathConf {
+	pa.confMutex.RLock()
+	defer pa.confMutex.RUnlock()
 	return pa.conf
 }
 
-// Name returns the name of this path.
-func (pa *path) Name() string {
-	return pa.name
-}
-
-func (pa *path) hasStaticSource() bool {
-	return strings.HasPrefix(pa.conf.Source, "rtsp://") ||
-		strings.HasPrefix(pa.conf.Source, "rtsps://") ||
-		strings.HasPrefix(pa.conf.Source, "rtmp://") ||
-		strings.HasPrefix(pa.conf.Source, "rtmps://") ||
-		strings.HasPrefix(pa.conf.Source, "http://") ||
-		strings.HasPrefix(pa.conf.Source, "https://") ||
-		pa.conf.Source == "rpiCamera"
-}
-
-func (pa *path) hasOnDemandStaticSource() bool {
-	return pa.hasStaticSource() && pa.conf.SourceOnDemand
-}
-
-func (pa *path) hasOnDemandPublisher() bool {
-	return pa.conf.RunOnDemand != ""
-}
-
 func (pa *path) run() {
+	defer close(pa.done)
 	defer pa.wg.Done()
 
 	if pa.conf.Source == "redirect" {
 		pa.source = &sourceRedirect{}
-	} else if pa.hasStaticSource() {
+	} else if pa.conf.HasStaticSource() {
 		pa.source = newSourceStatic(
 			pa.conf,
 			pa.readTimeout,
@@ -410,12 +398,21 @@ func (pa *path) run() {
 					return fmt.Errorf("not in use")
 				}
 
+			case newConf := <-pa.chReloadConf:
+				if pa.conf.HasStaticSource() {
+					go pa.source.(*sourceStatic).reloadConf(newConf)
+				}
+
+				pa.confMutex.Lock()
+				pa.conf = newConf
+				pa.confMutex.Unlock()
+
 			case req := <-pa.chSourceStaticSetReady:
 				err := pa.sourceSetReady(req.medias, req.generateRTPPackets)
 				if err != nil {
 					req.res <- pathSourceStaticSetReadyRes{err: err}
 				} else {
-					if pa.hasOnDemandStaticSource() {
+					if pa.conf.HasOnDemandStaticSource() {
 						pa.onDemandStaticSourceReadyTimer.Stop()
 						pa.onDemandStaticSourceReadyTimer = newEmptyTimer()
 
@@ -444,7 +441,7 @@ func (pa *path) run() {
 				// in order to avoid a deadlock due to sourceStatic.stop()
 				close(req.res)
 
-				if pa.hasOnDemandStaticSource() && pa.onDemandStaticSourceState != pathOnDemandStateInitial {
+				if pa.conf.HasOnDemandStaticSource() && pa.onDemandStaticSourceState != pathOnDemandStateInitial {
 					pa.onDemandStaticSourceStop()
 				}
 
@@ -498,6 +495,9 @@ func (pa *path) run() {
 		}
 	}()
 
+	// call before destroying context
+	pa.parent.onPathClose(pa)
+
 	pa.ctxCancel()
 
 	pa.onDemandStaticSourceReadyTimer.Stop()
@@ -536,8 +536,6 @@ func (pa *path) run() {
 	}
 
 	pa.log(logger.Debug, "destroyed (%v)", err)
-
-	pa.parent.onPathClose(pa)
 }
 
 func (pa *path) shouldClose() bool {
@@ -637,7 +635,12 @@ func (pa *path) onDemandPublisherStop() {
 }
 
 func (pa *path) sourceSetReady(medias media.Medias, allocateEncoder bool) error {
-	stream, err := newStream(medias, allocateEncoder, pa.bytesReceived)
+	stream, err := newStream(
+		pa.udpMaxPayloadSize,
+		medias,
+		allocateEncoder,
+		pa.bytesReceived,
+	)
 	if err != nil {
 		return err
 	}
@@ -687,7 +690,7 @@ func (pa *path) doReaderRemove(r reader) {
 
 func (pa *path) doPublisherRemove() {
 	if pa.stream != nil {
-		if pa.hasOnDemandPublisher() && pa.onDemandPublisherState != pathOnDemandStateInitial {
+		if pa.conf.HasOnDemandPublisher() && pa.onDemandPublisherState != pathOnDemandStateInitial {
 			pa.onDemandPublisherStop()
 		} else {
 			pa.sourceSetNotReady()
@@ -712,7 +715,7 @@ func (pa *path) handleDescribe(req pathDescribeReq) {
 		return
 	}
 
-	if pa.hasOnDemandStaticSource() {
+	if pa.conf.HasOnDemandStaticSource() {
 		if pa.onDemandStaticSourceState == pathOnDemandStateInitial {
 			pa.onDemandStaticSourceStart()
 		}
@@ -720,7 +723,7 @@ func (pa *path) handleDescribe(req pathDescribeReq) {
 		return
 	}
 
-	if pa.hasOnDemandPublisher() {
+	if pa.conf.HasOnDemandPublisher() {
 		if pa.onDemandPublisherState == pathOnDemandStateInitial {
 			pa.onDemandPublisherStart()
 		}
@@ -791,7 +794,7 @@ func (pa *path) handlePublisherStart(req pathPublisherStartReq) {
 		return
 	}
 
-	if pa.hasOnDemandPublisher() {
+	if pa.conf.HasOnDemandPublisher() {
 		pa.onDemandPublisherReadyTimer.Stop()
 		pa.onDemandPublisherReadyTimer = newEmptyTimer()
 
@@ -815,7 +818,7 @@ func (pa *path) handlePublisherStart(req pathPublisherStartReq) {
 
 func (pa *path) handlePublisherStop(req pathPublisherStopReq) {
 	if req.author == pa.source && pa.stream != nil {
-		if pa.hasOnDemandPublisher() && pa.onDemandPublisherState != pathOnDemandStateInitial {
+		if pa.conf.HasOnDemandPublisher() && pa.onDemandPublisherState != pathOnDemandStateInitial {
 			pa.onDemandPublisherStop()
 		} else {
 			pa.sourceSetNotReady()
@@ -831,11 +834,11 @@ func (pa *path) handleReaderRemove(req pathReaderRemoveReq) {
 	close(req.res)
 
 	if len(pa.readers) == 0 {
-		if pa.hasOnDemandStaticSource() {
+		if pa.conf.HasOnDemandStaticSource() {
 			if pa.onDemandStaticSourceState == pathOnDemandStateReady {
 				pa.onDemandStaticSourceScheduleClose()
 			}
-		} else if pa.hasOnDemandPublisher() {
+		} else if pa.conf.HasOnDemandPublisher() {
 			if pa.onDemandPublisherState == pathOnDemandStateReady {
 				pa.onDemandPublisherScheduleClose()
 			}
@@ -849,7 +852,7 @@ func (pa *path) handleReaderAdd(req pathReaderAddReq) {
 		return
 	}
 
-	if pa.hasOnDemandStaticSource() {
+	if pa.conf.HasOnDemandStaticSource() {
 		if pa.onDemandStaticSourceState == pathOnDemandStateInitial {
 			pa.onDemandStaticSourceStart()
 		}
@@ -857,7 +860,7 @@ func (pa *path) handleReaderAdd(req pathReaderAddReq) {
 		return
 	}
 
-	if pa.hasOnDemandPublisher() {
+	if pa.conf.HasOnDemandPublisher() {
 		if pa.onDemandPublisherState == pathOnDemandStateInitial {
 			pa.onDemandPublisherStart()
 		}
@@ -871,13 +874,13 @@ func (pa *path) handleReaderAdd(req pathReaderAddReq) {
 func (pa *path) handleReaderAddPost(req pathReaderAddReq) {
 	pa.readers[req.author] = struct{}{}
 
-	if pa.hasOnDemandStaticSource() {
+	if pa.conf.HasOnDemandStaticSource() {
 		if pa.onDemandStaticSourceState == pathOnDemandStateClosing {
 			pa.onDemandStaticSourceState = pathOnDemandStateReady
 			pa.onDemandStaticSourceCloseTimer.Stop()
 			pa.onDemandStaticSourceCloseTimer = newEmptyTimer()
 		}
-	} else if pa.hasOnDemandPublisher() {
+	} else if pa.conf.HasOnDemandPublisher() {
 		if pa.onDemandPublisherState == pathOnDemandStateClosing {
 			pa.onDemandPublisherState = pathOnDemandStateReady
 			pa.onDemandPublisherCloseTimer.Stop()
@@ -918,6 +921,14 @@ func (pa *path) handleAPIPathsList(req pathAPIPathsListSubReq) {
 		}(),
 	}
 	close(req.res)
+}
+
+// reloadConf is called by pathManager.
+func (pa *path) reloadConf(newConf *conf.PathConf) {
+	select {
+	case pa.chReloadConf <- newConf:
+	case <-pa.ctx.Done():
+	}
 }
 
 // sourceStaticSetReady is called by sourceStatic.
