@@ -9,21 +9,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aler9/gortsplib/v2/pkg/codecs/h264"
-	"github.com/aler9/gortsplib/v2/pkg/codecs/h265"
-	"github.com/aler9/gortsplib/v2/pkg/codecs/mpeg4audio"
-	"github.com/aler9/gortsplib/v2/pkg/format"
+	"github.com/bluenviron/gortsplib/v3/pkg/formats"
+	"github.com/bluenviron/mediacommon/pkg/codecs/h264"
+	"github.com/bluenviron/mediacommon/pkg/codecs/h265"
+	"github.com/bluenviron/mediacommon/pkg/codecs/mpeg4audio"
 	"github.com/notedit/rtmp/format/flv/flvio"
 
-	"github.com/aler9/rtsp-simple-server/internal/rtmp/bytecounter"
-	"github.com/aler9/rtsp-simple-server/internal/rtmp/h264conf"
-	"github.com/aler9/rtsp-simple-server/internal/rtmp/handshake"
-	"github.com/aler9/rtsp-simple-server/internal/rtmp/message"
-)
-
-const (
-	codecH264 = 7
-	codecAAC  = 10
+	"github.com/aler9/mediamtx/internal/rtmp/bytecounter"
+	"github.com/aler9/mediamtx/internal/rtmp/h264conf"
+	"github.com/aler9/mediamtx/internal/rtmp/handshake"
+	"github.com/aler9/mediamtx/internal/rtmp/message"
 )
 
 func resultIsOK1(res *message.MsgCommandAMF0) bool {
@@ -584,14 +579,14 @@ func (c *Conn) WriteMessage(msg message.Message) error {
 	return c.mrw.Write(msg)
 }
 
-func trackFromH264DecoderConfig(data []byte) (format.Format, error) {
+func trackFromH264DecoderConfig(data []byte) (formats.Format, error) {
 	var conf h264conf.Conf
 	err := conf.Unmarshal(data)
 	if err != nil {
 		return nil, fmt.Errorf("unable to parse H264 config: %v", err)
 	}
 
-	return &format.H264{
+	return &formats.H264{
 		PayloadTyp:        96,
 		SPS:               conf.SPS,
 		PPS:               conf.PPS,
@@ -599,14 +594,14 @@ func trackFromH264DecoderConfig(data []byte) (format.Format, error) {
 	}, nil
 }
 
-func trackFromAACDecoderConfig(data []byte) (*format.MPEG4Audio, error) {
+func trackFromAACDecoderConfig(data []byte) (*formats.MPEG4Audio, error) {
 	var mpegConf mpeg4audio.Config
 	err := mpegConf.Unmarshal(data)
 	if err != nil {
 		return nil, err
 	}
 
-	return &format.MPEG4Audio{
+	return &formats.MPEG4Audio{
 		PayloadTyp:       96,
 		Config:           &mpegConf,
 		SizeLength:       13,
@@ -617,7 +612,7 @@ func trackFromAACDecoderConfig(data []byte) (*format.MPEG4Audio, error) {
 
 var errEmptyMetadata = errors.New("metadata is empty")
 
-func (c *Conn) readTracksFromMetadata(payload []interface{}) (format.Format, *format.MPEG4Audio, error) {
+func (c *Conn) readTracksFromMetadata(payload []interface{}) (formats.Format, formats.Format, error) {
 	if len(payload) != 1 {
 		return nil, nil, fmt.Errorf("invalid metadata")
 	}
@@ -626,6 +621,9 @@ func (c *Conn) readTracksFromMetadata(payload []interface{}) (format.Format, *fo
 	if !ok {
 		return nil, nil, fmt.Errorf("invalid metadata")
 	}
+
+	var videoTrack formats.Format
+	var audioTrack formats.Format
 
 	hasVideo, err := func() (bool, error) {
 		v, ok := md.GetV("videocodecid")
@@ -639,7 +637,7 @@ func (c *Conn) readTracksFromMetadata(payload []interface{}) (format.Format, *fo
 			case 0:
 				return false, nil
 
-			case codecH264:
+			case message.CodecH264:
 				return true, nil
 			}
 
@@ -649,7 +647,7 @@ func (c *Conn) readTracksFromMetadata(payload []interface{}) (format.Format, *fo
 			}
 		}
 
-		return false, fmt.Errorf("unsupported video codec %v", v)
+		return false, fmt.Errorf("unsupported video codec: %v", v)
 	}()
 	if err != nil {
 		return nil, nil, err
@@ -667,7 +665,11 @@ func (c *Conn) readTracksFromMetadata(payload []interface{}) (format.Format, *fo
 			case 0:
 				return false, nil
 
-			case codecAAC:
+			case message.CodecMPEG2Audio:
+				audioTrack = &formats.MPEG2Audio{}
+				return true, nil
+
+			case message.CodecMPEG4Audio:
 				return true, nil
 			}
 
@@ -687,10 +689,12 @@ func (c *Conn) readTracksFromMetadata(payload []interface{}) (format.Format, *fo
 		return nil, nil, errEmptyMetadata
 	}
 
-	var videoTrack format.Format
-	var audioTrack *format.MPEG4Audio
-
 	for {
+		if (!hasVideo || videoTrack != nil) &&
+			(!hasAudio || audioTrack != nil) {
+			return videoTrack, audioTrack, nil
+		}
+
 		msg, err := c.ReadMessage()
 		if err != nil {
 			return nil, nil, err
@@ -703,12 +707,12 @@ func (c *Conn) readTracksFromMetadata(payload []interface{}) (format.Format, *fo
 			}
 
 			if videoTrack == nil {
-				if tmsg.H264Type == flvio.AVC_SEQHDR {
+				if tmsg.Type == message.MsgVideoTypeConfig {
 					videoTrack, err = trackFromH264DecoderConfig(tmsg.Payload)
 					if err != nil {
 						return nil, nil, err
 					}
-				} else if tmsg.H264Type == 1 && tmsg.IsKeyFrame {
+				} else if tmsg.Type == message.MsgVideoTypeAU && tmsg.IsKeyFrame {
 					nalus, err := h264.AVCCUnmarshal(tmsg.Payload)
 					if err != nil {
 						return nil, nil, err
@@ -734,7 +738,7 @@ func (c *Conn) readTracksFromMetadata(payload []interface{}) (format.Format, *fo
 					}
 
 					if h265VPS != nil && h265SPS != nil && h265PPS != nil {
-						videoTrack = &format.H265{
+						videoTrack = &formats.H265{
 							PayloadTyp: 96,
 							VPS:        h265VPS,
 							SPS:        h265SPS,
@@ -750,7 +754,7 @@ func (c *Conn) readTracksFromMetadata(payload []interface{}) (format.Format, *fo
 			}
 
 			if audioTrack == nil {
-				if tmsg.AACType == flvio.AVC_SEQHDR {
+				if tmsg.Codec == message.CodecMPEG4Audio && tmsg.AACType == message.MsgAudioAACTypeConfig {
 					audioTrack, err = trackFromAACDecoderConfig(tmsg.Payload)
 					if err != nil {
 						return nil, nil, err
@@ -758,18 +762,13 @@ func (c *Conn) readTracksFromMetadata(payload []interface{}) (format.Format, *fo
 				}
 			}
 		}
-
-		if (!hasVideo || videoTrack != nil) &&
-			(!hasAudio || audioTrack != nil) {
-			return videoTrack, audioTrack, nil
-		}
 	}
 }
 
-func (c *Conn) readTracksFromMessages(msg message.Message) (format.Format, *format.MPEG4Audio, error) {
+func (c *Conn) readTracksFromMessages(msg message.Message) (formats.Format, *formats.MPEG4Audio, error) {
 	var startTime *time.Duration
-	var videoTrack format.Format
-	var audioTrack *format.MPEG4Audio
+	var videoTrack formats.Format
+	var audioTrack *formats.MPEG4Audio
 
 	// analyze 1 second of packets
 outer:
@@ -781,7 +780,7 @@ outer:
 				startTime = &v
 			}
 
-			if tmsg.H264Type == flvio.AVC_SEQHDR {
+			if tmsg.Type == message.MsgVideoTypeConfig {
 				if videoTrack == nil {
 					var err error
 					videoTrack, err = trackFromH264DecoderConfig(tmsg.Payload)
@@ -806,7 +805,7 @@ outer:
 				startTime = &v
 			}
 
-			if tmsg.AACType == flvio.AVC_SEQHDR {
+			if tmsg.AACType == message.MsgAudioAACTypeConfig {
 				if audioTrack == nil {
 					var err error
 					audioTrack, err = trackFromAACDecoderConfig(tmsg.Payload)
@@ -842,7 +841,7 @@ outer:
 
 // ReadTracks reads track informations.
 // It returns the video track and the audio track.
-func (c *Conn) ReadTracks() (format.Format, *format.MPEG4Audio, error) {
+func (c *Conn) ReadTracks() (formats.Format, formats.Format, error) {
 	msg, err := func() (message.Message, error) {
 		for {
 			msg, err := c.ReadMessage()
@@ -901,7 +900,7 @@ func (c *Conn) ReadTracks() (format.Format, *format.MPEG4Audio, error) {
 }
 
 // WriteTracks writes track informations.
-func (c *Conn) WriteTracks(videoTrack *format.H264, audioTrack *format.MPEG4Audio) error {
+func (c *Conn) WriteTracks(videoTrack formats.Format, audioTrack formats.Format) error {
 	err := c.WriteMessage(&message.MsgDataAMF0{
 		ChunkStreamID:   4,
 		MessageStreamID: 0x1000000,
@@ -916,10 +915,13 @@ func (c *Conn) WriteTracks(videoTrack *format.H264, audioTrack *format.MPEG4Audi
 				{
 					K: "videocodecid",
 					V: func() float64 {
-						if videoTrack != nil {
-							return codecH264
+						switch videoTrack.(type) {
+						case *formats.H264:
+							return message.CodecH264
+
+						default:
+							return 0
 						}
-						return 0
 					}(),
 				},
 				{
@@ -929,10 +931,16 @@ func (c *Conn) WriteTracks(videoTrack *format.H264, audioTrack *format.MPEG4Audi
 				{
 					K: "audiocodecid",
 					V: func() float64 {
-						if audioTrack != nil {
-							return codecAAC
+						switch audioTrack.(type) {
+						case *formats.MPEG2Audio:
+							return message.CodecMPEG2Audio
+
+						case *formats.MPEG4Audio:
+							return message.CodecMPEG4Audio
+
+						default:
+							return 0
 						}
-						return 0
 					}(),
 				},
 			},
@@ -942,28 +950,31 @@ func (c *Conn) WriteTracks(videoTrack *format.H264, audioTrack *format.MPEG4Audi
 		return err
 	}
 
-	// write decoder config only if SPS and PPS are available.
-	// if they're not available yet, they're sent later.
-	if videoTrack != nil && videoTrack.SafeSPS() != nil && videoTrack.SafePPS() != nil {
-		buf, _ := h264conf.Conf{
-			SPS: videoTrack.SafeSPS(),
-			PPS: videoTrack.SafePPS(),
-		}.Marshal()
+	if videoTrack, ok := videoTrack.(*formats.H264); ok {
+		// write decoder config only if SPS and PPS are available.
+		// if they're not available yet, they're sent later.
+		if sps, pps := videoTrack.SafeParams(); sps != nil && pps != nil {
+			buf, _ := h264conf.Conf{
+				SPS: sps,
+				PPS: pps,
+			}.Marshal()
 
-		err = c.WriteMessage(&message.MsgVideo{
-			ChunkStreamID:   message.MsgVideoChunkStreamID,
-			MessageStreamID: 0x1000000,
-			IsKeyFrame:      true,
-			H264Type:        flvio.AVC_SEQHDR,
-			Payload:         buf,
-		})
-		if err != nil {
-			return err
+			err = c.WriteMessage(&message.MsgVideo{
+				ChunkStreamID:   message.MsgVideoChunkStreamID,
+				MessageStreamID: 0x1000000,
+				Codec:           message.CodecH264,
+				IsKeyFrame:      true,
+				Type:            message.MsgVideoTypeConfig,
+				Payload:         buf,
+			})
+			if err != nil {
+				return err
+			}
 		}
 	}
 
-	if audioTrack != nil {
-		enc, err := audioTrack.Config.Marshal()
+	if mpeg4audioTrack, ok := audioTrack.(*formats.MPEG4Audio); ok {
+		enc, err := mpeg4audioTrack.Config.Marshal()
 		if err != nil {
 			return err
 		}
@@ -971,10 +982,11 @@ func (c *Conn) WriteTracks(videoTrack *format.H264, audioTrack *format.MPEG4Audi
 		err = c.WriteMessage(&message.MsgAudio{
 			ChunkStreamID:   message.MsgAudioChunkStreamID,
 			MessageStreamID: 0x1000000,
+			Codec:           message.CodecMPEG4Audio,
 			Rate:            flvio.SOUND_44Khz,
 			Depth:           flvio.SOUND_16BIT,
 			Channels:        flvio.SOUND_STEREO,
-			AACType:         flvio.AAC_SEQHDR,
+			AACType:         message.MsgAudioAACTypeConfig,
 			Payload:         enc,
 		})
 		if err != nil {

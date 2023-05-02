@@ -6,17 +6,17 @@ import (
 	"net"
 	"time"
 
-	"github.com/aler9/gortsplib/v2/pkg/codecs/h264"
-	"github.com/aler9/gortsplib/v2/pkg/codecs/mpeg4audio"
-	"github.com/aler9/gortsplib/v2/pkg/format"
-	"github.com/aler9/gortsplib/v2/pkg/media"
 	"github.com/asticode/go-astits"
-	"github.com/bluenviron/gohlslib/pkg/mpegts"
+	"github.com/bluenviron/gortsplib/v3/pkg/formats"
+	"github.com/bluenviron/gortsplib/v3/pkg/media"
+	"github.com/bluenviron/mediacommon/pkg/codecs/h264"
+	"github.com/bluenviron/mediacommon/pkg/codecs/mpeg4audio"
+	"github.com/bluenviron/mediacommon/pkg/formats/mpegts"
 	"golang.org/x/net/ipv4"
 
-	"github.com/aler9/rtsp-simple-server/internal/conf"
-	"github.com/aler9/rtsp-simple-server/internal/formatprocessor"
-	"github.com/aler9/rtsp-simple-server/internal/logger"
+	"github.com/aler9/mediamtx/internal/conf"
+	"github.com/aler9/mediamtx/internal/formatprocessor"
+	"github.com/aler9/mediamtx/internal/logger"
 )
 
 const (
@@ -61,10 +61,39 @@ func opusGetPacketDuration(pkt []byte) time.Duration {
 	return (time.Duration(frameDuration) * time.Duration(frameCount) * time.Millisecond) / 48
 }
 
-type readerFunc func([]byte) (int, error)
+type packetConnReader struct {
+	pc        net.PacketConn
+	midbuf    []byte
+	midbufpos int
+}
 
-func (rf readerFunc) Read(p []byte) (int, error) {
-	return rf(p)
+func newPacketConnReader(pc net.PacketConn) *packetConnReader {
+	return &packetConnReader{
+		pc:     pc,
+		midbuf: make([]byte, 0, 1500),
+	}
+}
+
+func (r *packetConnReader) Read(p []byte) (int, error) {
+	if r.midbufpos < len(r.midbuf) {
+		n := copy(p, r.midbuf[r.midbufpos:])
+		r.midbufpos += n
+		return n, nil
+	}
+
+	mn, _, err := r.pc.ReadFrom(r.midbuf[:cap(r.midbuf)])
+	if err != nil {
+		return 0, err
+	}
+
+	if (mn % 188) != 0 {
+		return 0, fmt.Errorf("received packet with size %d not multiple of 188", mn)
+	}
+
+	r.midbuf = r.midbuf[:mn]
+	n := copy(p, r.midbuf)
+	r.midbufpos = n
+	return n, nil
 }
 
 type udpSourceParent interface {
@@ -98,7 +127,7 @@ func (s *udpSource) run(ctx context.Context, cnf *conf.PathConf, reloadConf chan
 
 	hostPort := cnf.Source[len("udp://"):]
 
-	pc, err := net.ListenPacket("udp", hostPort)
+	pc, err := net.ListenPacket(restrictNetwork("udp", hostPort))
 	if err != nil {
 		return err
 	}
@@ -128,34 +157,9 @@ func (s *udpSource) run(ctx context.Context, cnf *conf.PathConf, reloadConf chan
 		}
 	}
 
-	midbuffer := make([]byte, 0, udpMTU)
-	midbufferPos := 0
-
-	readPacket := func(buf []byte) (int, error) {
-		if midbufferPos < len(midbuffer) {
-			n := copy(buf, midbuffer[midbufferPos:])
-			midbufferPos += n
-			return n, nil
-		}
-
-		mn, _, err := pc.ReadFrom(midbuffer[:cap(midbuffer)])
-		if err != nil {
-			return 0, err
-		}
-
-		if (mn % 188) != 0 {
-			return 0, fmt.Errorf("received packet with size %d not multiple of 188", mn)
-		}
-
-		midbuffer = midbuffer[:mn]
-		n := copy(buf, midbuffer)
-		midbufferPos = n
-		return n, nil
-	}
-
 	dem := astits.NewDemuxer(
 		context.Background(),
-		readerFunc(readPacket),
+		newPacketConnReader(pc),
 		astits.DemuxerOptPacketSize(188))
 
 	readerErr := make(chan error)
@@ -173,15 +177,17 @@ func (s *udpSource) run(ctx context.Context, cnf *conf.PathConf, reloadConf chan
 			var stream *stream
 
 			for _, track := range tracks {
-				medi := &media.Media{
-					Formats: []format.Format{track.Format},
-				}
-				medias = append(medias, medi)
-				cformat := track.Format
+				var medi *media.Media
 
-				switch track.Format.(type) {
-				case *format.H264:
-					medi.Type = media.TypeVideo
+				switch tcodec := track.Codec.(type) {
+				case *mpegts.CodecH264:
+					medi = &media.Media{
+						Type: media.TypeVideo,
+						Formats: []formats.Format{&formats.H264{
+							PayloadTyp:        96,
+							PacketizationMode: 1,
+						}},
+					}
 
 					mediaCallbacks[track.ES.ElementaryPID] = func(pts time.Duration, data []byte) {
 						au, err := h264.AnnexBUnmarshal(data)
@@ -190,7 +196,7 @@ func (s *udpSource) run(ctx context.Context, cnf *conf.PathConf, reloadConf chan
 							return
 						}
 
-						err = stream.writeData(medi, cformat, &formatprocessor.UnitH264{
+						err = stream.writeUnit(medi, medi.Formats[0], &formatprocessor.UnitH264{
 							PTS: pts,
 							AU:  au,
 							NTP: time.Now(),
@@ -200,8 +206,13 @@ func (s *udpSource) run(ctx context.Context, cnf *conf.PathConf, reloadConf chan
 						}
 					}
 
-				case *format.H265:
-					medi.Type = media.TypeVideo
+				case *mpegts.CodecH265:
+					medi = &media.Media{
+						Type: media.TypeVideo,
+						Formats: []formats.Format{&formats.H265{
+							PayloadTyp: 96,
+						}},
+					}
 
 					mediaCallbacks[track.ES.ElementaryPID] = func(pts time.Duration, data []byte) {
 						au, err := h264.AnnexBUnmarshal(data)
@@ -210,7 +221,7 @@ func (s *udpSource) run(ctx context.Context, cnf *conf.PathConf, reloadConf chan
 							return
 						}
 
-						err = stream.writeData(medi, cformat, &formatprocessor.UnitH265{
+						err = stream.writeUnit(medi, medi.Formats[0], &formatprocessor.UnitH265{
 							PTS: pts,
 							AU:  au,
 							NTP: time.Now(),
@@ -220,8 +231,17 @@ func (s *udpSource) run(ctx context.Context, cnf *conf.PathConf, reloadConf chan
 						}
 					}
 
-				case *format.MPEG4Audio:
-					medi.Type = media.TypeAudio
+				case *mpegts.CodecMPEG4Audio:
+					medi = &media.Media{
+						Type: media.TypeAudio,
+						Formats: []formats.Format{&formats.MPEG4Audio{
+							PayloadTyp:       96,
+							SizeLength:       13,
+							IndexLength:      3,
+							IndexDeltaLength: 3,
+							Config:           &tcodec.Config,
+						}},
+					}
 
 					mediaCallbacks[track.ES.ElementaryPID] = func(pts time.Duration, data []byte) {
 						var pkts mpeg4audio.ADTSPackets
@@ -236,7 +256,7 @@ func (s *udpSource) run(ctx context.Context, cnf *conf.PathConf, reloadConf chan
 							aus[i] = pkt.AU
 						}
 
-						err = stream.writeData(medi, cformat, &formatprocessor.UnitMPEG4Audio{
+						err = stream.writeUnit(medi, medi.Formats[0], &formatprocessor.UnitMPEG4Audio{
 							PTS: pts,
 							AUs: aus,
 							NTP: time.Now(),
@@ -246,8 +266,14 @@ func (s *udpSource) run(ctx context.Context, cnf *conf.PathConf, reloadConf chan
 						}
 					}
 
-				case *format.Opus:
-					medi.Type = media.TypeAudio
+				case *mpegts.CodecOpus:
+					medi = &media.Media{
+						Type: media.TypeAudio,
+						Formats: []formats.Format{&formats.Opus{
+							PayloadTyp: 96,
+							IsStereo:   (tcodec.Channels == 2),
+						}},
+					}
 
 					mediaCallbacks[track.ES.ElementaryPID] = func(pts time.Duration, data []byte) {
 						pos := 0
@@ -261,7 +287,7 @@ func (s *udpSource) run(ctx context.Context, cnf *conf.PathConf, reloadConf chan
 							}
 							pos += n
 
-							err = stream.writeData(medi, cformat, &formatprocessor.UnitOpus{
+							err = stream.writeUnit(medi, medi.Formats[0], &formatprocessor.UnitOpus{
 								PTS:   pts,
 								Frame: au.Frame,
 								NTP:   time.Now(),
@@ -278,6 +304,8 @@ func (s *udpSource) run(ctx context.Context, cnf *conf.PathConf, reloadConf chan
 						}
 					}
 				}
+
+				medias = append(medias, medi)
 			}
 
 			res := s.parent.sourceStaticImplSetReady(pathSourceStaticSetReadyReq{

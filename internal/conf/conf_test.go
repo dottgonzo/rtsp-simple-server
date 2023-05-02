@@ -8,11 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aler9/gortsplib/v2"
+	"github.com/bluenviron/gortsplib/v3"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/nacl/secretbox"
 
-	"github.com/aler9/rtsp-simple-server/internal/logger"
+	"github.com/aler9/mediamtx/internal/logger"
 )
 
 func writeTempFile(byts []byte) (string, error) {
@@ -118,7 +118,7 @@ func TestConfFromEnvOnly(t *testing.T) {
 	os.Setenv("RTSP_PATHS_CAM1_SOURCE", "rtsp://testing")
 	defer os.Unsetenv("RTSP_PATHS_CAM1_SOURCE")
 
-	conf, hasFile, err := Load("rtsp-simple-server.yml")
+	conf, hasFile, err := Load("mediamtx.yml")
 	require.NoError(t, err)
 	require.Equal(t, false, hasFile)
 

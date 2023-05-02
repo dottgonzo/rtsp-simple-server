@@ -8,11 +8,12 @@ import (
 	"net/http"
 	"reflect"
 	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/aler9/rtsp-simple-server/internal/conf"
-	"github.com/aler9/rtsp-simple-server/internal/logger"
+	"github.com/aler9/mediamtx/internal/conf"
+	"github.com/aler9/mediamtx/internal/logger"
 )
 
 func interfaceIsEmpty(i interface{}) bool {
@@ -117,13 +118,14 @@ type api struct {
 	webRTCServer apiWebRTCServer
 	parent       apiParent
 
-	ln    net.Listener
-	mutex sync.Mutex
-	s     *http.Server
+	ln         net.Listener
+	httpServer *http.Server
+	mutex      sync.Mutex
 }
 
 func newAPI(
 	address string,
+	readTimeout conf.StringDuration,
 	conf *conf.Conf,
 	pathManager apiPathManager,
 	rtspServer apiRTSPServer,
@@ -134,7 +136,7 @@ func newAPI(
 	webRTCServer apiWebRTCServer,
 	parent apiParent,
 ) (*api, error) {
-	ln, err := net.Listen("tcp", address)
+	ln, err := net.Listen(restrictNetwork("tcp", address))
 	if err != nil {
 		return nil, err
 	}
@@ -154,9 +156,10 @@ func newAPI(
 
 	router := gin.New()
 	router.SetTrustedProxies(nil)
+
 	mwLog := httpLoggerMiddleware(a)
-	router.NoRoute(mwLog)
-	group := router.Group("/", mwLog)
+	router.NoRoute(mwLog, httpServerHeaderMiddleware)
+	group := router.Group("/", mwLog, httpServerHeaderMiddleware)
 
 	group.GET("/v1/config/get", a.onConfigGet)
 	group.POST("/v1/config/set", a.onConfigSet)
@@ -197,12 +200,13 @@ func newAPI(
 		group.POST("/v1/webrtcconns/kick/:id", a.onWebRTCConnsKick)
 	}
 
-	a.s = &http.Server{
-		Handler:  router,
-		ErrorLog: log.New(&nilWriter{}, "", 0),
+	a.httpServer = &http.Server{
+		Handler:           router,
+		ReadHeaderTimeout: time.Duration(readTimeout),
+		ErrorLog:          log.New(&nilWriter{}, "", 0),
 	}
 
-	go a.s.Serve(ln)
+	go a.httpServer.Serve(ln)
 
 	a.log(logger.Info, "listener opened on "+address)
 
@@ -211,7 +215,7 @@ func newAPI(
 
 func (a *api) close() {
 	a.log(logger.Info, "listener is closing")
-	a.s.Shutdown(context.Background())
+	a.httpServer.Shutdown(context.Background())
 	a.ln.Close() // in case Shutdown() is called before Serve()
 }
 

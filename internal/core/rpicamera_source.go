@@ -4,46 +4,48 @@ import (
 	"context"
 	"time"
 
-	"github.com/aler9/gortsplib/v2/pkg/format"
-	"github.com/aler9/gortsplib/v2/pkg/media"
+	"github.com/bluenviron/gortsplib/v3/pkg/formats"
+	"github.com/bluenviron/gortsplib/v3/pkg/media"
 
-	"github.com/aler9/rtsp-simple-server/internal/conf"
-	"github.com/aler9/rtsp-simple-server/internal/formatprocessor"
-	"github.com/aler9/rtsp-simple-server/internal/logger"
-	"github.com/aler9/rtsp-simple-server/internal/rpicamera"
+	"github.com/aler9/mediamtx/internal/conf"
+	"github.com/aler9/mediamtx/internal/formatprocessor"
+	"github.com/aler9/mediamtx/internal/logger"
+	"github.com/aler9/mediamtx/internal/rpicamera"
 )
 
 func paramsFromConf(cnf *conf.PathConf) rpicamera.Params {
 	return rpicamera.Params{
-		CameraID:     cnf.RPICameraCamID,
-		Width:        cnf.RPICameraWidth,
-		Height:       cnf.RPICameraHeight,
-		HFlip:        cnf.RPICameraHFlip,
-		VFlip:        cnf.RPICameraVFlip,
-		Brightness:   cnf.RPICameraBrightness,
-		Contrast:     cnf.RPICameraContrast,
-		Saturation:   cnf.RPICameraSaturation,
-		Sharpness:    cnf.RPICameraSharpness,
-		Exposure:     cnf.RPICameraExposure,
-		AWB:          cnf.RPICameraAWB,
-		Denoise:      cnf.RPICameraDenoise,
-		Shutter:      cnf.RPICameraShutter,
-		Metering:     cnf.RPICameraMetering,
-		Gain:         cnf.RPICameraGain,
-		EV:           cnf.RPICameraEV,
-		ROI:          cnf.RPICameraROI,
-		TuningFile:   cnf.RPICameraTuningFile,
-		Mode:         cnf.RPICameraMode,
-		FPS:          cnf.RPICameraFPS,
-		IDRPeriod:    cnf.RPICameraIDRPeriod,
-		Bitrate:      cnf.RPICameraBitrate,
-		Profile:      cnf.RPICameraProfile,
-		Level:        cnf.RPICameraLevel,
-		AfMode:       cnf.RPICameraAfMode,
-		AfRange:      cnf.RPICameraAfRange,
-		AfSpeed:      cnf.RPICameraAfSpeed,
-		LensPosition: cnf.RPICameraLensPosition,
-		AfWindow:     cnf.RPICameraAfWindow,
+		CameraID:          cnf.RPICameraCamID,
+		Width:             cnf.RPICameraWidth,
+		Height:            cnf.RPICameraHeight,
+		HFlip:             cnf.RPICameraHFlip,
+		VFlip:             cnf.RPICameraVFlip,
+		Brightness:        cnf.RPICameraBrightness,
+		Contrast:          cnf.RPICameraContrast,
+		Saturation:        cnf.RPICameraSaturation,
+		Sharpness:         cnf.RPICameraSharpness,
+		Exposure:          cnf.RPICameraExposure,
+		AWB:               cnf.RPICameraAWB,
+		Denoise:           cnf.RPICameraDenoise,
+		Shutter:           cnf.RPICameraShutter,
+		Metering:          cnf.RPICameraMetering,
+		Gain:              cnf.RPICameraGain,
+		EV:                cnf.RPICameraEV,
+		ROI:               cnf.RPICameraROI,
+		TuningFile:        cnf.RPICameraTuningFile,
+		Mode:              cnf.RPICameraMode,
+		FPS:               cnf.RPICameraFPS,
+		IDRPeriod:         cnf.RPICameraIDRPeriod,
+		Bitrate:           cnf.RPICameraBitrate,
+		Profile:           cnf.RPICameraProfile,
+		Level:             cnf.RPICameraLevel,
+		AfMode:            cnf.RPICameraAfMode,
+		AfRange:           cnf.RPICameraAfRange,
+		AfSpeed:           cnf.RPICameraAfSpeed,
+		LensPosition:      cnf.RPICameraLensPosition,
+		AfWindow:          cnf.RPICameraAfWindow,
+		TextOverlayEnable: cnf.RPICameraTextOverlayEnable,
+		TextOverlay:       cnf.RPICameraTextOverlay,
 	}
 }
 
@@ -73,7 +75,7 @@ func (s *rpiCameraSource) Log(level logger.Level, format string, args ...interfa
 func (s *rpiCameraSource) run(ctx context.Context, cnf *conf.PathConf, reloadConf chan *conf.PathConf) error {
 	medi := &media.Media{
 		Type: media.TypeVideo,
-		Formats: []format.Format{&format.H264{
+		Formats: []formats.Format{&formats.H264{
 			PayloadTyp:        96,
 			PacketizationMode: 1,
 		}},
@@ -95,7 +97,7 @@ func (s *rpiCameraSource) run(ctx context.Context, cnf *conf.PathConf, reloadCon
 			stream = res.stream
 		}
 
-		err := stream.writeData(medi, medi.Formats[0], &formatprocessor.UnitH264{
+		err := stream.writeUnit(medi, medi.Formats[0], &formatprocessor.UnitH264{
 			PTS: dts,
 			AU:  au,
 			NTP: time.Now(),

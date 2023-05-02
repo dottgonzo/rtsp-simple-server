@@ -8,7 +8,7 @@ import (
 	"github.com/notedit/rtmp/format/flv/flvio"
 	"github.com/stretchr/testify/require"
 
-	"github.com/aler9/rtsp-simple-server/internal/rtmp/bytecounter"
+	"github.com/aler9/mediamtx/internal/rtmp/bytecounter"
 )
 
 var readWriterCases = []struct {
@@ -27,15 +27,33 @@ var readWriterCases = []struct {
 		},
 	},
 	{
-		"audio",
+		"audio mpeg2",
 		&MsgAudio{
 			ChunkStreamID:   7,
 			DTS:             6013806 * time.Millisecond,
 			MessageStreamID: 4534543,
+			Codec:           CodecMPEG2Audio,
 			Rate:            flvio.SOUND_44Khz,
 			Depth:           flvio.SOUND_16BIT,
 			Channels:        flvio.SOUND_STEREO,
-			AACType:         flvio.AAC_RAW,
+			Payload:         []byte{0x01, 0x02, 0x03, 0x04},
+		},
+		[]byte{
+			0x7, 0x5b, 0xc3, 0x6e, 0x0, 0x0, 0x5, 0x8, 0x0, 0x45, 0x31, 0xf, 0x2f,
+			0x01, 0x02, 0x03, 0x04,
+		},
+	},
+	{
+		"audio mpeg4",
+		&MsgAudio{
+			ChunkStreamID:   7,
+			DTS:             6013806 * time.Millisecond,
+			MessageStreamID: 4534543,
+			Codec:           CodecMPEG4Audio,
+			Rate:            flvio.SOUND_44Khz,
+			Depth:           flvio.SOUND_16BIT,
+			Channels:        flvio.SOUND_STEREO,
+			AACType:         MsgAudioAACTypeAU,
 			Payload:         []byte{0x5A, 0xC0, 0x77, 0x40},
 		},
 		[]byte{
@@ -202,8 +220,9 @@ var readWriterCases = []struct {
 			ChunkStreamID:   6,
 			DTS:             2543534 * time.Millisecond,
 			MessageStreamID: 0x1000000,
+			Codec:           CodecH264,
 			IsKeyFrame:      true,
-			H264Type:        flvio.AVC_SEQHDR,
+			Type:            MsgVideoTypeConfig,
 			PTSDelta:        10 * time.Millisecond,
 			Payload:         []byte{0x01, 0x02, 0x03},
 		},

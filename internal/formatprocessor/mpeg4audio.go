@@ -4,12 +4,12 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/aler9/gortsplib/v2/pkg/format"
-	"github.com/aler9/gortsplib/v2/pkg/formatdecenc/rtpmpeg4audio"
+	"github.com/bluenviron/gortsplib/v3/pkg/formats"
+	"github.com/bluenviron/gortsplib/v3/pkg/formats/rtpmpeg4audio"
 	"github.com/pion/rtp"
 )
 
-// UnitMPEG4Audio is a MPEG4-audio data unit.
+// UnitMPEG4Audio is a MPEG-4 Audio data unit.
 type UnitMPEG4Audio struct {
 	RTPPackets []*rtp.Packet
 	NTP        time.Time
@@ -29,14 +29,14 @@ func (d *UnitMPEG4Audio) GetNTP() time.Time {
 
 type formatProcessorMPEG4Audio struct {
 	udpMaxPayloadSize int
-	format            *format.MPEG4Audio
+	format            *formats.MPEG4Audio
 	encoder           *rtpmpeg4audio.Encoder
 	decoder           *rtpmpeg4audio.Decoder
 }
 
 func newMPEG4Audio(
 	udpMaxPayloadSize int,
-	forma *format.MPEG4Audio,
+	forma *formats.MPEG4Audio,
 	allocateEncoder bool,
 ) (*formatProcessorMPEG4Audio, error) {
 	t := &formatProcessorMPEG4Audio{
@@ -45,7 +45,15 @@ func newMPEG4Audio(
 	}
 
 	if allocateEncoder {
-		t.encoder = forma.CreateEncoder()
+		t.encoder = &rtpmpeg4audio.Encoder{
+			PayloadMaxSize:   t.udpMaxPayloadSize - 12,
+			PayloadType:      forma.PayloadTyp,
+			SampleRate:       forma.Config.SampleRate,
+			SizeLength:       forma.SizeLength,
+			IndexLength:      forma.IndexLength,
+			IndexDeltaLength: forma.IndexDeltaLength,
+		}
+		t.encoder.Init()
 	}
 
 	return t, nil
@@ -88,11 +96,12 @@ func (t *formatProcessorMPEG4Audio) Process(unit Unit, hasNonRTSPReaders bool) e
 		return nil
 	}
 
+	// encode into RTP
 	pkts, err := t.encoder.Encode(tunit.AUs, tunit.PTS)
 	if err != nil {
 		return err
 	}
-
 	tunit.RTPPackets = pkts
+
 	return nil
 }

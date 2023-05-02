@@ -11,13 +11,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aler9/gortsplib/v2"
-	"github.com/aler9/gortsplib/v2/pkg/headers"
 	"github.com/bluenviron/gohlslib"
+	"github.com/bluenviron/gortsplib/v3"
+	"github.com/bluenviron/gortsplib/v3/pkg/headers"
 	"golang.org/x/crypto/nacl/secretbox"
 	"gopkg.in/yaml.v2"
 
-	"github.com/aler9/rtsp-simple-server/internal/logger"
+	"github.com/aler9/mediamtx/internal/logger"
 )
 
 func decrypt(key string, byts []byte) ([]byte, error) {
@@ -40,9 +40,17 @@ func decrypt(key string, byts []byte) ([]byte, error) {
 }
 
 func loadFromFile(fpath string, conf *Conf) (bool, error) {
-	// rtsp-simple-server.yml is optional
+	if fpath == "mediamtx.yml" {
+		// give priority to the legacy configuration file, in order not to break
+		// existing setups
+		if _, err := os.Stat("rtsp-simple-server.yml"); err == nil {
+			fpath = "rtsp-simple-server.yml"
+		}
+	}
+
+	// mediamtx.yml is optional
 	// other configuration files are not
-	if fpath == "rtsp-simple-server.yml" {
+	if fpath == "mediamtx.yml" || fpath == "rtsp-simple-server.yml" {
 		if _, err := os.Stat(fpath); err != nil {
 			return false, nil
 		}
@@ -53,7 +61,14 @@ func loadFromFile(fpath string, conf *Conf) (bool, error) {
 		return true, err
 	}
 
-	if key, ok := os.LookupEnv("RTSP_CONFKEY"); ok {
+	if key, ok := os.LookupEnv("RTSP_CONFKEY"); ok { // legacy format
+		byts, err = decrypt(key, byts)
+		if err != nil {
+			return true, err
+		}
+	}
+
+	if key, ok := os.LookupEnv("MTX_CONFKEY"); ok {
 		byts, err = decrypt(key, byts)
 		if err != nil {
 			return true, err
@@ -252,7 +267,12 @@ func Load(fpath string) (*Conf, bool, error) {
 		return nil, false, err
 	}
 
-	err = loadFromEnvironment("RTSP", conf)
+	err = loadFromEnvironment("RTSP", conf) // legacy prefix
+	if err != nil {
+		return nil, false, err
+	}
+
+	err = loadFromEnvironment("MTX", conf)
 	if err != nil {
 		return nil, false, err
 	}
@@ -291,7 +311,7 @@ func (conf *Conf) CheckAndFillMissing() error {
 		conf.LogDestinations = LogDestinations{logger.DestinationStdout: {}}
 	}
 	if conf.LogFile == "" {
-		conf.LogFile = "rtsp-simple-server.log"
+		conf.LogFile = "mediamtx.log"
 	}
 	if conf.ReadTimeout == 0 {
 		conf.ReadTimeout = 10 * StringDuration(time.Second)
@@ -306,10 +326,10 @@ func (conf *Conf) CheckAndFillMissing() error {
 		return fmt.Errorf("'readBufferCount' must be a power of two")
 	}
 	if conf.UDPMaxPayloadSize == 0 {
-		conf.UDPMaxPayloadSize = 1500
+		conf.UDPMaxPayloadSize = 1472
 	}
-	if conf.UDPMaxPayloadSize > 1500 {
-		return fmt.Errorf("'udpMaxPayloadSize' must be less than 1500")
+	if conf.UDPMaxPayloadSize > 1472 {
+		return fmt.Errorf("'udpMaxPayloadSize' must be less than 1472")
 	}
 	if conf.ExternalAuthenticationURL != "" {
 		if !strings.HasPrefix(conf.ExternalAuthenticationURL, "http://") &&

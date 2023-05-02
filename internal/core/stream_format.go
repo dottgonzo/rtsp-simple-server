@@ -4,10 +4,10 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/aler9/gortsplib/v2/pkg/format"
-	"github.com/aler9/gortsplib/v2/pkg/media"
+	"github.com/bluenviron/gortsplib/v3/pkg/formats"
+	"github.com/bluenviron/gortsplib/v3/pkg/media"
 
-	"github.com/aler9/rtsp-simple-server/internal/formatprocessor"
+	"github.com/aler9/mediamtx/internal/formatprocessor"
 )
 
 type streamFormat struct {
@@ -18,7 +18,7 @@ type streamFormat struct {
 
 func newStreamFormat(
 	udpMaxPayloadSize int,
-	forma format.Format,
+	forma formats.Format,
 	generateRTPPackets bool,
 ) (*streamFormat, error) {
 	proc, err := formatprocessor.New(udpMaxPayloadSize, forma, generateRTPPackets)
@@ -46,7 +46,7 @@ func (sf *streamFormat) readerRemove(r reader) {
 	delete(sf.nonRTSPReaders, r)
 }
 
-func (sf *streamFormat) writeData(s *stream, medi *media.Media, data formatprocessor.Unit) error {
+func (sf *streamFormat) writeUnit(s *stream, medi *media.Media, data formatprocessor.Unit) error {
 	sf.mutex.RLock()
 	defer sf.mutex.RUnlock()
 

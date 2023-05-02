@@ -2,19 +2,17 @@ package core
 
 import (
 	"crypto/tls"
-	"io"
 	"net"
-	"net/http"
 	"net/url"
 	"os"
 	"testing"
 
-	"github.com/aler9/gortsplib/v2"
-	"github.com/aler9/gortsplib/v2/pkg/format"
-	"github.com/aler9/gortsplib/v2/pkg/media"
+	"github.com/bluenviron/gortsplib/v3"
+	"github.com/bluenviron/gortsplib/v3/pkg/formats"
+	"github.com/bluenviron/gortsplib/v3/pkg/media"
 	"github.com/stretchr/testify/require"
 
-	"github.com/aler9/rtsp-simple-server/internal/rtmp"
+	"github.com/aler9/mediamtx/internal/rtmp"
 )
 
 func TestMetrics(t *testing.T) {
@@ -26,7 +24,8 @@ func TestMetrics(t *testing.T) {
 	require.NoError(t, err)
 	defer os.Remove(serverKeyFpath)
 
-	p, ok := newInstance("metrics: yes\n" +
+	p, ok := newInstance("hlsAlwaysRemux: yes\n" +
+		"metrics: yes\n" +
 		"webrtcServerCert: " + serverCertFpath + "\n" +
 		"webrtcServerKey: " + serverKeyFpath + "\n" +
 		"encryption: optional\n" +
@@ -36,6 +35,32 @@ func TestMetrics(t *testing.T) {
 		"  all:\n")
 	require.Equal(t, true, ok)
 	defer p.Close()
+
+	bo, err := httpPullFile("http://localhost:9998/metrics")
+	require.NoError(t, err)
+
+	require.Equal(t, `paths 0
+hls_muxers 0
+hls_muxers_bytes_sent 0
+rtsp_conns 0
+rtsp_conns_bytes_received 0
+rtsp_conns_bytes_sent 0
+rtsp_sessions 0
+rtsp_sessions_bytes_received 0
+rtsp_sessions_bytes_sent 0
+rtsps_conns 0
+rtsps_conns_bytes_received 0
+rtsps_conns_bytes_sent 0
+rtsps_sessions 0
+rtsps_sessions_bytes_received 0
+rtsps_sessions_bytes_sent 0
+rtmp_conns 0
+rtmp_conns_bytes_received 0
+rtmp_conns_bytes_sent 0
+webrtc_conns 0
+webrtc_conns_bytes_received 0
+webrtc_conns_bytes_sent 0
+`, string(bo))
 
 	medi := testMediaH264
 
@@ -62,7 +87,7 @@ func TestMetrics(t *testing.T) {
 	err = conn.InitializeClient(u, true)
 	require.NoError(t, err)
 
-	videoTrack := &format.H264{
+	videoTrack := &formats.H264{
 		PayloadTyp: 96,
 		SPS: []byte{ // 1920x1080 baseline
 			0x67, 0x42, 0xc0, 0x28, 0xd9, 0x00, 0x78, 0x02,
@@ -76,22 +101,7 @@ func TestMetrics(t *testing.T) {
 	err = conn.WriteTracks(videoTrack, nil)
 	require.NoError(t, err)
 
-	func() {
-		res, err := http.Get("http://localhost:8888/rtsp_path/index.m3u8")
-		require.NoError(t, err)
-		defer res.Body.Close()
-		require.Equal(t, 200, res.StatusCode)
-	}()
-
-	req, err := http.NewRequest(http.MethodGet, "http://localhost:9998/metrics", nil)
-	require.NoError(t, err)
-
-	res, err := http.DefaultClient.Do(req)
-	require.NoError(t, err)
-	defer res.Body.Close()
-	require.Equal(t, http.StatusOK, res.StatusCode)
-
-	bo, err := io.ReadAll(res.Body)
+	bo, err = httpPullFile("http://localhost:9998/metrics")
 	require.NoError(t, err)
 
 	require.Regexp(t,
@@ -101,8 +111,12 @@ func TestMetrics(t *testing.T) {
 			`paths_bytes_received\{name=".*?",state="ready"\} 0`+"\n"+
 			`paths\{name=".*?",state="ready"\} 1`+"\n"+
 			`paths_bytes_received\{name=".*?",state="ready"\} 0`+"\n"+
-			`hls_muxers\{name="rtsp_path"\} 1`+"\n"+
-			`hls_muxers_bytes_sent\{name="rtsp_path"\} [0-9]+`+"\n"+
+			`hls_muxers\{name=".*?"\} 1`+"\n"+
+			`hls_muxers_bytes_sent\{name=".*?"\} [0-9]+`+"\n"+
+			`hls_muxers\{name=".*?"\} 1`+"\n"+
+			`hls_muxers_bytes_sent\{name=".*?"\} [0-9]+`+"\n"+
+			`hls_muxers\{name=".*?"\} 1`+"\n"+
+			`hls_muxers_bytes_sent\{name=".*?"\} [0-9]+`+"\n"+
 			`rtsp_conns\{id=".*?"\} 1`+"\n"+
 			`rtsp_conns_bytes_received\{id=".*?"\} [0-9]+`+"\n"+
 			`rtsp_conns_bytes_sent\{id=".*?"\} [0-9]+`+"\n"+
@@ -118,6 +132,9 @@ func TestMetrics(t *testing.T) {
 			`rtmp_conns\{id=".*?",state="publish"\} 1`+"\n"+
 			`rtmp_conns_bytes_received\{id=".*?",state="publish"\} [0-9]+`+"\n"+
 			`rtmp_conns_bytes_sent\{id=".*?",state="publish"\} [0-9]+`+"\n"+
+			`webrtc_conns 0`+"\n"+
+			`webrtc_conns_bytes_received 0`+"\n"+
+			`webrtc_conns_bytes_sent 0`+"\n"+
 			"$",
 		string(bo))
 }

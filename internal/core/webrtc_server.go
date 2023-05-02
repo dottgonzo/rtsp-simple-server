@@ -17,9 +17,9 @@ import (
 	"github.com/pion/ice/v2"
 	"github.com/pion/webrtc/v3"
 
-	"github.com/aler9/rtsp-simple-server/internal/conf"
-	"github.com/aler9/rtsp-simple-server/internal/logger"
-	"github.com/aler9/rtsp-simple-server/internal/websocket"
+	"github.com/aler9/mediamtx/internal/conf"
+	"github.com/aler9/mediamtx/internal/logger"
+	"github.com/aler9/mediamtx/internal/websocket"
 )
 
 //go:embed webrtc_index.html
@@ -80,9 +80,10 @@ type webRTCServer struct {
 	ctx               context.Context
 	ctxCancel         func()
 	ln                net.Listener
+	requestPool       *httpRequestPool
+	httpServer        *http.Server
 	udpMuxLn          net.PacketConn
 	tcpMuxLn          net.Listener
-	tlsConfig         *tls.Config
 	conns             map[*webRTCConn]struct{}
 	iceHostNAT1To1IPs []string
 	iceUDPMux         ice.UDPMux
@@ -108,6 +109,7 @@ func newWebRTCServer(
 	allowOrigin string,
 	trustedProxies conf.IPsOrCIDRs,
 	iceServers []string,
+	readTimeout conf.StringDuration,
 	readBufferCount int,
 	pathManager *pathManager,
 	metrics *metrics,
@@ -116,7 +118,7 @@ func newWebRTCServer(
 	iceUDPMuxAddress string,
 	iceTCPMuxAddress string,
 ) (*webRTCServer, error) {
-	ln, err := net.Listen("tcp", address)
+	ln, err := net.Listen(restrictNetwork("tcp", address))
 	if err != nil {
 		return nil, err
 	}
@@ -137,7 +139,7 @@ func newWebRTCServer(
 	var iceUDPMux ice.UDPMux
 	var udpMuxLn net.PacketConn
 	if iceUDPMuxAddress != "" {
-		udpMuxLn, err = net.ListenPacket("udp", iceUDPMuxAddress)
+		udpMuxLn, err = net.ListenPacket(restrictNetwork("udp", iceUDPMuxAddress))
 		if err != nil {
 			return nil, err
 		}
@@ -147,7 +149,7 @@ func newWebRTCServer(
 	var iceTCPMux ice.TCPMux
 	var tcpMuxLn net.Listener
 	if iceTCPMuxAddress != "" {
-		tcpMuxLn, err = net.Listen("tcp", iceTCPMuxAddress)
+		tcpMuxLn, err = net.Listen(restrictNetwork("tcp", iceTCPMuxAddress))
 		if err != nil {
 			return nil, err
 		}
@@ -170,7 +172,6 @@ func newWebRTCServer(
 		ln:                        ln,
 		udpMuxLn:                  udpMuxLn,
 		tcpMuxLn:                  tcpMuxLn,
-		tlsConfig:                 tlsConfig,
 		iceUDPMux:                 iceUDPMux,
 		iceTCPMux:                 iceTCPMux,
 		iceHostNAT1To1IPs:         iceHostNAT1To1IPs,
@@ -180,6 +181,20 @@ func newWebRTCServer(
 		chAPIConnsList:            make(chan webRTCServerAPIConnsListReq),
 		chAPIConnsKick:            make(chan webRTCServerAPIConnsKickReq),
 		done:                      make(chan struct{}),
+	}
+
+	s.requestPool = newHTTPRequestPool()
+
+	router := gin.New()
+	httpSetTrustedProxies(router, trustedProxies)
+
+	router.NoRoute(s.requestPool.mw, httpLoggerMiddleware(s), httpServerHeaderMiddleware, s.onRequest)
+
+	s.httpServer = &http.Server{
+		Handler:           router,
+		TLSConfig:         tlsConfig,
+		ReadHeaderTimeout: time.Duration(readTimeout),
+		ErrorLog:          log.New(&nilWriter{}, "", 0),
 	}
 
 	str := "listener opened on " + address + " (HTTP)"
@@ -214,28 +229,10 @@ func (s *webRTCServer) close() {
 func (s *webRTCServer) run() {
 	defer close(s.done)
 
-	rp := newHTTPRequestPool()
-	defer rp.close()
-
-	router := gin.New()
-	router.NoRoute(rp.mw, httpLoggerMiddleware(s), s.onRequest)
-
-	tmp := make([]string, len(s.trustedProxies))
-	for i, entry := range s.trustedProxies {
-		tmp[i] = entry.String()
-	}
-	router.SetTrustedProxies(tmp)
-
-	hs := &http.Server{
-		Handler:   router,
-		TLSConfig: s.tlsConfig,
-		ErrorLog:  log.New(&nilWriter{}, "", 0),
-	}
-
-	if s.tlsConfig != nil {
-		go hs.ServeTLS(s.ln, "", "")
+	if s.httpServer.TLSConfig != nil {
+		go s.httpServer.ServeTLS(s.ln, "", "")
 	} else {
-		go hs.Serve(s.ln)
+		go s.httpServer.Serve(s.ln)
 	}
 
 	var wg sync.WaitGroup
@@ -306,8 +303,9 @@ outer:
 
 	s.ctxCancel()
 
-	hs.Shutdown(context.Background())
+	s.httpServer.Shutdown(context.Background())
 	s.ln.Close() // in case Shutdown() is called before Serve()
+	s.requestPool.close()
 
 	wg.Wait()
 
@@ -372,12 +370,12 @@ func (s *webRTCServer) onRequest(ctx *gin.Context) {
 	if err != nil {
 		if terr, ok := err.(pathErrAuthCritical); ok {
 			s.log(logger.Info, "authentication error: %s", terr.message)
-			ctx.Writer.Header().Set("WWW-Authenticate", `Basic realm="rtsp-simple-server"`)
+			ctx.Writer.Header().Set("WWW-Authenticate", `Basic realm="mediamtx"`)
 			ctx.Writer.WriteHeader(http.StatusUnauthorized)
 			return
 		}
 
-		ctx.Writer.Header().Set("WWW-Authenticate", `Basic realm="rtsp-simple-server"`)
+		ctx.Writer.Header().Set("WWW-Authenticate", `Basic realm="mediamtx"`)
 		ctx.Writer.WriteHeader(http.StatusUnauthorized)
 		return
 	}

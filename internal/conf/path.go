@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aler9/gortsplib/v2/pkg/url"
+	"github.com/bluenviron/gortsplib/v3/pkg/url"
 )
 
 var rePathName = regexp.MustCompile(`^[0-9a-zA-Z_\-/\.~]+$`)
@@ -80,6 +80,8 @@ type PathConf struct {
 	RPICameraAfSpeed           string         `json:"rpiCameraAfSpeed"`
 	RPICameraLensPosition      float64        `json:"rpiCameraLensPosition"`
 	RPICameraAfWindow          string         `json:"rpiCameraAfWindow"`
+	RPICameraTextOverlayEnable bool           `json:"rpiCameraTextOverlayEnable"`
+	RPICameraTextOverlay       string         `json:"rpiCameraTextOverlay"`
 
 	// authentication
 	PublishUser Credential `json:"publishUser"`
@@ -248,6 +250,9 @@ func (pconf *PathConf) checkAndFillMissing(conf *Conf, name string) error {
 		}
 		if pconf.RPICameraLevel == "" {
 			pconf.RPICameraLevel = "4.1"
+		}
+		if pconf.RPICameraTextOverlay == "" {
+			pconf.RPICameraTextOverlay = "%Y-%m-%d %H:%M:%S - MediaMTX"
 		}
 
 	default:

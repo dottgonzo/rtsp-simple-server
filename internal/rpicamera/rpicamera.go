@@ -5,6 +5,7 @@ package rpicamera
 
 import (
 	_ "embed"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"os/exec"
@@ -15,7 +16,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/aler9/gortsplib/v2/pkg/codecs/h264"
+	"github.com/bluenviron/mediacommon/pkg/codecs/h264"
 )
 
 const (
@@ -24,17 +25,6 @@ const (
 
 //go:embed exe/exe
 var exeContent []byte
-
-func getKernelArch() (string, error) {
-	cmd := exec.Command("uname", "-m")
-
-	byts, err := cmd.Output()
-	if err != nil {
-		return "", err
-	}
-
-	return string(byts[:len(byts)-1]), nil
-}
 
 func startEmbeddedExe(content []byte, env []string) (*exec.Cmd, error) {
 	tempPath := tempPathPrefix + strconv.FormatInt(time.Now().UnixNano(), 10)
@@ -66,7 +56,7 @@ func serializeParams(p Params) []byte {
 	ret := make([]string, nf)
 
 	for i := 0; i < nf; i++ {
-		entry := rt.Field(i).Name + "="
+		entry := rt.Field(i).Name + ":"
 		f := rv.Field(i)
 
 		switch f.Kind() {
@@ -77,7 +67,7 @@ func serializeParams(p Params) []byte {
 			entry += strconv.FormatFloat(f.Float(), 'f', -1, 64)
 
 		case reflect.String:
-			entry += f.String()
+			entry += base64.StdEncoding.EncodeToString([]byte(f.String()))
 
 		case reflect.Bool:
 			if f.Bool() {
@@ -102,6 +92,9 @@ func findLibrary(name string) (string, error) {
 		for _, line := range strings.Split(string(byts), "\n") {
 			f := strings.Split(line, " => ")
 			if len(f) == 2 && strings.Contains(f[1], name+".so") {
+				if runtime.GOARCH == "arm" && !strings.Contains(f[1], "arm-linux-gnueabihf") {
+					return "", fmt.Errorf("libcamera is 64-bit, you need the 64-bit server version")
+				}
 				return f[1], nil
 			}
 		}
@@ -120,24 +113,6 @@ func setupSymlink(name string) error {
 	return os.Symlink(lib, "/dev/shm/"+name+".so.x.x.x")
 }
 
-// 32-bit embedded executables can't run on 64-bit.
-func checkArch() error {
-	if runtime.GOARCH != "arm" {
-		return nil
-	}
-
-	arch, err := getKernelArch()
-	if err != nil {
-		return err
-	}
-
-	if arch == "aarch64" {
-		return fmt.Errorf("OS is 64-bit, you need the arm64 server version")
-	}
-
-	return nil
-}
-
 var (
 	mutex    sync.Mutex
 	setupped bool
@@ -148,12 +123,7 @@ func setupLibcameraOnce() error {
 	defer mutex.Unlock()
 
 	if !setupped {
-		err := checkArch()
-		if err != nil {
-			return err
-		}
-
-		err = setupSymlink("libcamera")
+		err := setupSymlink("libcamera")
 		if err != nil {
 			return err
 		}

@@ -8,14 +8,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/aler9/gortsplib/v2"
-	"github.com/aler9/gortsplib/v2/pkg/base"
-	"github.com/aler9/gortsplib/v2/pkg/headers"
-	"github.com/aler9/gortsplib/v2/pkg/liberrors"
+	"github.com/bluenviron/gortsplib/v3"
+	"github.com/bluenviron/gortsplib/v3/pkg/base"
+	"github.com/bluenviron/gortsplib/v3/pkg/headers"
+	"github.com/bluenviron/gortsplib/v3/pkg/liberrors"
 
-	"github.com/aler9/rtsp-simple-server/internal/conf"
-	"github.com/aler9/rtsp-simple-server/internal/externalcmd"
-	"github.com/aler9/rtsp-simple-server/internal/logger"
+	"github.com/aler9/mediamtx/internal/conf"
+	"github.com/aler9/mediamtx/internal/externalcmd"
+	"github.com/aler9/mediamtx/internal/logger"
 )
 
 type rtspServerAPIConnsListItem struct {
@@ -351,7 +351,13 @@ func (s *rtspServer) OnPause(ctx *gortsplib.ServerHandlerOnPauseCtx) (*base.Resp
 	return se.onPause(ctx)
 }
 
-// OnDecodeError implements gortsplib.ServerHandlerOnOnDecodeError.
+// OnPacketLost implements gortsplib.ServerHandlerOnDecodeError.
+func (s *rtspServer) OnPacketLost(ctx *gortsplib.ServerHandlerOnPacketLostCtx) {
+	se := ctx.Session.UserData().(*rtspSession)
+	se.onPacketLost(ctx)
+}
+
+// OnDecodeError implements gortsplib.ServerHandlerOnDecodeError.
 func (s *rtspServer) OnDecodeError(ctx *gortsplib.ServerHandlerOnDecodeErrorCtx) {
 	se := ctx.Session.UserData().(*rtspSession)
 	se.onDecodeError(ctx)

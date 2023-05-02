@@ -1,11 +1,11 @@
 package core
 
 import (
-	"github.com/aler9/gortsplib/v2"
-	"github.com/aler9/gortsplib/v2/pkg/format"
-	"github.com/aler9/gortsplib/v2/pkg/media"
+	"github.com/bluenviron/gortsplib/v3"
+	"github.com/bluenviron/gortsplib/v3/pkg/formats"
+	"github.com/bluenviron/gortsplib/v3/pkg/media"
 
-	"github.com/aler9/rtsp-simple-server/internal/formatprocessor"
+	"github.com/aler9/mediamtx/internal/formatprocessor"
 )
 
 type stream struct {
@@ -46,7 +46,7 @@ func (s *stream) medias() media.Medias {
 	return s.rtspStream.Medias()
 }
 
-func (s *stream) readerAdd(r reader, medi *media.Media, forma format.Format, cb func(formatprocessor.Unit)) {
+func (s *stream) readerAdd(r reader, medi *media.Media, forma formats.Format, cb func(formatprocessor.Unit)) {
 	sm := s.smedias[medi]
 	sf := sm.formats[forma]
 	sf.readerAdd(r, cb)
@@ -60,8 +60,8 @@ func (s *stream) readerRemove(r reader) {
 	}
 }
 
-func (s *stream) writeData(medi *media.Media, forma format.Format, data formatprocessor.Unit) error {
+func (s *stream) writeUnit(medi *media.Media, forma formats.Format, data formatprocessor.Unit) error {
 	sm := s.smedias[medi]
 	sf := sm.formats[forma]
-	return sf.writeData(s, medi, data)
+	return sf.writeUnit(s, medi, data)
 }
