@@ -1,4 +1,4 @@
-FROM golang:1.19.3-alpine AS builder
+FROM golang:1.20-alpine AS builder
 WORKDIR /app
 ENV CGO_ENABLED=0
 COPY ./internal ./internal
