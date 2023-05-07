@@ -98,7 +98,7 @@ type apiRTMPServer interface {
 }
 
 type apiParent interface {
-	Log(logger.Level, string, ...interface{})
+	logger.Writer
 	apiConfigSet(conf *conf.Conf)
 }
 
@@ -208,18 +208,18 @@ func newAPI(
 
 	go a.httpServer.Serve(ln)
 
-	a.log(logger.Info, "listener opened on "+address)
+	a.Log(logger.Info, "listener opened on "+address)
 
 	return a, nil
 }
 
 func (a *api) close() {
-	a.log(logger.Info, "listener is closing")
+	a.Log(logger.Info, "listener is closing")
 	a.httpServer.Shutdown(context.Background())
 	a.ln.Close() // in case Shutdown() is called before Serve()
 }
 
-func (a *api) log(level logger.Level, format string, args ...interface{}) {
+func (a *api) Log(level logger.Level, format string, args ...interface{}) {
 	a.parent.Log(level, "[API] "+format, args...)
 }
 
@@ -245,7 +245,7 @@ func (a *api) onConfigSet(ctx *gin.Context) {
 
 	fillStruct(newConf, in)
 
-	err = newConf.CheckAndFillMissing()
+	err = newConf.Check()
 	if err != nil {
 		ctx.AbortWithStatus(http.StatusBadRequest)
 		return
@@ -289,7 +289,7 @@ func (a *api) onConfigPathsAdd(ctx *gin.Context) {
 
 	newConf.Paths[name] = newConfPath
 
-	err = newConf.CheckAndFillMissing()
+	err = newConf.Check()
 	if err != nil {
 		ctx.AbortWithStatus(http.StatusBadRequest)
 		return
@@ -331,7 +331,7 @@ func (a *api) onConfigPathsEdit(ctx *gin.Context) {
 
 	fillStruct(newConfPath, in)
 
-	err = newConf.CheckAndFillMissing()
+	err = newConf.Check()
 	if err != nil {
 		ctx.AbortWithStatus(http.StatusBadRequest)
 		return
@@ -366,7 +366,7 @@ func (a *api) onConfigPathsDelete(ctx *gin.Context) {
 
 	delete(newConf.Paths, name)
 
-	err := newConf.CheckAndFillMissing()
+	err := newConf.Check()
 	if err != nil {
 		ctx.AbortWithStatus(http.StatusBadRequest)
 		return

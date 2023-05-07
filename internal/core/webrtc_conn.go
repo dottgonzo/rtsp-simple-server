@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/bluenviron/gortsplib/v3/pkg/formats"
+	"github.com/bluenviron/gortsplib/v3/pkg/formats/rtpav1"
 	"github.com/bluenviron/gortsplib/v3/pkg/formats/rtph264"
 	"github.com/bluenviron/gortsplib/v3/pkg/formats/rtpvp8"
 	"github.com/bluenviron/gortsplib/v3/pkg/formats/rtpvp9"
@@ -46,7 +47,20 @@ func newPeerConnection(configuration webrtc.Configuration,
 	options ...func(*webrtc.API),
 ) (*webrtc.PeerConnection, error) {
 	m := &webrtc.MediaEngine{}
+
 	if err := m.RegisterDefaultCodecs(); err != nil {
+		return nil, err
+	}
+
+	err := m.RegisterCodec(webrtc.RTPCodecParameters{
+		RTPCodecCapability: webrtc.RTPCodecCapability{
+			MimeType:  webrtc.MimeTypeAV1,
+			ClockRate: 90000,
+		},
+		PayloadType: 96,
+	},
+		webrtc.RTPCodecTypeVideo)
+	if err != nil {
 		return nil, err
 	}
 
@@ -84,7 +98,7 @@ type webRTCConnPathManager interface {
 }
 
 type webRTCConnParent interface {
-	log(logger.Level, string, ...interface{})
+	logger.Writer
 	connClose(*webRTCConn)
 }
 
@@ -143,7 +157,7 @@ func newWebRTCConn(
 		closed:            make(chan struct{}),
 	}
 
-	c.log(logger.Info, "opened")
+	c.Log(logger.Info, "opened")
 
 	wg.Add(1)
 	go c.run()
@@ -252,8 +266,8 @@ func (c *webRTCConn) bytesSent() uint64 {
 	return 0
 }
 
-func (c *webRTCConn) log(level logger.Level, format string, args ...interface{}) {
-	c.parent.log(level, "[conn %v] "+format, append([]interface{}{c.wsconn.RemoteAddr()}, args...)...)
+func (c *webRTCConn) Log(level logger.Level, format string, args ...interface{}) {
+	c.parent.Log(level, "[conn %v] "+format, append([]interface{}{c.wsconn.RemoteAddr()}, args...)...)
 }
 
 func (c *webRTCConn) run() {
@@ -281,7 +295,7 @@ func (c *webRTCConn) run() {
 
 	c.parent.connClose(c)
 
-	c.log(logger.Info, "closed (%v)", err)
+	c.Log(logger.Info, "closed (%v)", err)
 }
 
 func (c *webRTCConn) runInner(ctx context.Context) error {
@@ -328,7 +342,7 @@ func (c *webRTCConn) runInner(ctx context.Context) error {
 
 	if tracks == nil {
 		return fmt.Errorf(
-			"the stream doesn't contain any supported codec (which are currently VP9, VP8, H264, Opus, G722, G711)")
+			"the stream doesn't contain any supported codec, which are currently H264, VP8, VP9, G711, G722, Opus")
 	}
 
 	err = c.wsconn.WriteJSON(c.genICEServers())
@@ -377,7 +391,7 @@ func (c *webRTCConn) runInner(ctx context.Context) error {
 		default:
 		}
 
-		c.log(logger.Debug, "peer connection state: "+state.String())
+		c.Log(logger.Debug, "peer connection state: "+state.String())
 
 		switch state {
 		case webrtc.PeerConnectionStateConnected:
@@ -475,14 +489,14 @@ outer:
 	for {
 		select {
 		case candidate := <-localCandidate:
-			c.log(logger.Debug, "local candidate: %+v", candidate.Candidate)
+			c.Log(logger.Debug, "local candidate: %+v", candidate.Candidate)
 			err := c.wsconn.WriteJSON(candidate)
 			if err != nil {
 				return err
 			}
 
 		case candidate := <-remoteCandidate:
-			c.log(logger.Debug, "remote candidate: %+v", candidate.Candidate)
+			c.Log(logger.Debug, "remote candidate: %+v", candidate.Candidate)
 			err := pc.AddICECandidate(*candidate)
 			if err != nil {
 				return err
@@ -512,7 +526,7 @@ outer:
 	c.curPC = pc
 	c.mutex.Unlock()
 
-	c.log(logger.Info, "peer connection established, local candidate: %v, remote candidate: %v",
+	c.Log(logger.Info, "peer connection established, local candidate: %v, remote candidate: %v",
 		c.localCandidate(), c.remoteCandidate())
 
 	ringBuffer, _ := ringbuffer.New(uint64(c.readBufferCount))
@@ -530,7 +544,7 @@ outer:
 	}
 	defer res.stream.readerRemove(c)
 
-	c.log(logger.Info, "is reading from path '%s', %s",
+	c.Log(logger.Info, "is reading from path '%s', %s",
 		path.name, sourceMediaInfo(gatherMedias(tracks)))
 
 	go func() {
@@ -559,6 +573,51 @@ outer:
 }
 
 func (c *webRTCConn) createVideoTrack(medias media.Medias) (*webRTCTrack, error) {
+	var av1Format *formats.AV1
+	av1Media := medias.FindFormat(&av1Format)
+
+	if av1Format != nil {
+		webRTCTrak, err := webrtc.NewTrackLocalStaticRTP(
+			webrtc.RTPCodecCapability{
+				MimeType:  webrtc.MimeTypeAV1,
+				ClockRate: 90000,
+			},
+			"av1",
+			"rtspss",
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		encoder := &rtpav1.Encoder{
+			PayloadType:    96,
+			PayloadMaxSize: webrtcPayloadMaxSize,
+		}
+		encoder.Init()
+
+		return &webRTCTrack{
+			media:       av1Media,
+			format:      av1Format,
+			webRTCTrack: webRTCTrak,
+			cb: func(unit formatprocessor.Unit, ctx context.Context, writeError chan error) {
+				tunit := unit.(*formatprocessor.UnitAV1)
+
+				if tunit.OBUs == nil {
+					return
+				}
+
+				packets, err := encoder.Encode(tunit.OBUs, tunit.PTS)
+				if err != nil {
+					panic(err)
+				}
+
+				for _, pkt := range packets {
+					webRTCTrak.WriteRTP(pkt)
+				}
+			},
+		}, nil
+	}
+
 	var vp9Format *formats.VP9
 	vp9Media := medias.FindFormat(&vp9Format)
 
