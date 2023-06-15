@@ -14,9 +14,9 @@ import (
 	"github.com/bluenviron/mediacommon/pkg/formats/mpegts"
 	"golang.org/x/net/ipv4"
 
-	"github.com/aler9/mediamtx/internal/conf"
-	"github.com/aler9/mediamtx/internal/formatprocessor"
-	"github.com/aler9/mediamtx/internal/logger"
+	"github.com/bluenviron/mediamtx/internal/conf"
+	"github.com/bluenviron/mediamtx/internal/formatprocessor"
+	"github.com/bluenviron/mediamtx/internal/logger"
 )
 
 const (
@@ -59,6 +59,30 @@ func opusGetPacketDuration(pkt []byte) time.Duration {
 	}
 
 	return (time.Duration(frameDuration) * time.Duration(frameCount) * time.Millisecond) / 48
+}
+
+func joinMulticastGroupOnAtLeastOneInterface(p *ipv4.PacketConn, listenIP net.IP) error {
+	intfs, err := net.Interfaces()
+	if err != nil {
+		return err
+	}
+
+	success := false
+
+	for _, intf := range intfs {
+		if (intf.Flags & net.FlagMulticast) != 0 {
+			err := p.JoinGroup(&intf, &net.UDPAddr{IP: listenIP})
+			if err == nil {
+				success = true
+			}
+		}
+	}
+
+	if !success {
+		return fmt.Errorf("unable to activate multicast on any network interface")
+	}
+
+	return nil
 }
 
 type packetConnReader struct {
@@ -122,7 +146,7 @@ func (s *udpSource) Log(level logger.Level, format string, args ...interface{}) 
 }
 
 // run implements sourceStaticImpl.
-func (s *udpSource) run(ctx context.Context, cnf *conf.PathConf, reloadConf chan *conf.PathConf) error {
+func (s *udpSource) run(ctx context.Context, cnf *conf.PathConf, _ chan *conf.PathConf) error {
 	s.Log(logger.Debug, "connecting")
 
 	hostPort := cnf.Source[len("udp://"):]
@@ -144,16 +168,9 @@ func (s *udpSource) run(ctx context.Context, cnf *conf.PathConf, reloadConf chan
 			return err
 		}
 
-		intfs, err := net.Interfaces()
+		err = joinMulticastGroupOnAtLeastOneInterface(p, ip)
 		if err != nil {
 			return err
-		}
-
-		for _, intf := range intfs {
-			err := p.JoinGroup(&intf, &net.UDPAddr{IP: ip})
-			if err != nil {
-				return err
-			}
 		}
 	}
 
@@ -250,7 +267,7 @@ func (s *udpSource) run(ctx context.Context, cnf *conf.PathConf, reloadConf chan
 							aus[i] = pkt.AU
 						}
 
-						stream.writeUnit(medi, medi.Formats[0], &formatprocessor.UnitMPEG4Audio{
+						stream.writeUnit(medi, medi.Formats[0], &formatprocessor.UnitMPEG4AudioGeneric{
 							PTS: pts,
 							AUs: aus,
 							NTP: time.Now(),
@@ -304,9 +321,7 @@ func (s *udpSource) run(ctx context.Context, cnf *conf.PathConf, reloadConf chan
 				return res.err
 			}
 
-			defer func() {
-				s.parent.sourceStaticImplSetNotReady(pathSourceStaticSetNotReadyReq{})
-			}()
+			defer s.parent.sourceStaticImplSetNotReady(pathSourceStaticSetNotReadyReq{})
 
 			s.Log(logger.Info, "ready: %s", sourceMediaInfo(medias))
 
@@ -360,8 +375,9 @@ func (s *udpSource) run(ctx context.Context, cnf *conf.PathConf, reloadConf chan
 }
 
 // apiSourceDescribe implements sourceStaticImpl.
-func (*udpSource) apiSourceDescribe() interface{} {
-	return struct {
-		Type string `json:"type"`
-	}{"udpSource"}
+func (*udpSource) apiSourceDescribe() pathAPISourceOrReader {
+	return pathAPISourceOrReader{
+		Type: "udpSource",
+		ID:   "",
+	}
 }

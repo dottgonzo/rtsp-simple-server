@@ -4,6 +4,7 @@
 package externalcmd
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"syscall"
@@ -11,13 +12,13 @@ import (
 	"github.com/kballard/go-shellquote"
 )
 
-func (e *Cmd) runInner() (int, bool) {
-	cmdparts, err := shellquote.Split(e.cmdstr)
+func (e *Cmd) runOSSpecific() error {
+	cmdParts, err := shellquote.Split(e.cmdstr)
 	if err != nil {
-		return 0, true
+		return err
 	}
 
-	cmd := exec.Command(cmdparts[0], cmdparts[1:]...)
+	cmd := exec.Command(cmdParts[0], cmdParts[1:]...)
 
 	cmd.Env = append([]string(nil), os.Environ()...)
 	for key, val := range e.env {
@@ -29,7 +30,7 @@ func (e *Cmd) runInner() (int, bool) {
 
 	err = cmd.Start()
 	if err != nil {
-		return 0, true
+		return err
 	}
 
 	cmdDone := make(chan int)
@@ -51,9 +52,9 @@ func (e *Cmd) runInner() (int, bool) {
 	case <-e.terminate:
 		syscall.Kill(cmd.Process.Pid, syscall.SIGINT)
 		<-cmdDone
-		return 0, false
+		return errTerminated
 
 	case c := <-cmdDone:
-		return c, true
+		return fmt.Errorf("command returned code %d", c)
 	}
 }

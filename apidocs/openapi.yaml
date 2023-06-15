@@ -2,8 +2,8 @@ openapi: 3.0.0
 
 info:
   version: 1.0.0
-  title: mediamtx API
-  description: API of mediamtx, a server and proxy that supports various protocols.
+  title: MediaMTX API
+  description: API of MediaMTX, a server and proxy that supports various protocols.
   license:
     name: MIT
     url: https://opensource.org/licenses/MIT
@@ -171,13 +171,10 @@ components:
     PathConf:
       type: object
       properties:
-        # source
         source:
           type: string
-        sourceProtocol:
-          type: string
-        sourceAnyPortEnable:
-          type: boolean
+
+        # general
         sourceFingerprint:
           type: string
         sourceOnDemand:
@@ -186,12 +183,46 @@ components:
           type: string
         sourceOnDemandCloseAfter:
           type: string
-        sourceRedirect:
+
+        # authentication
+        publishUser:
           type: string
+        publishPass:
+          type: string
+        publishIPs:
+          type: array
+          items:
+            type: string
+        readUser:
+          type: string
+        readPass:
+          type: string
+        readIPs:
+          type: array
+          items:
+            type: string
+
+        # publisher
         disablePublisherOverride:
           type: boolean
         fallback:
           type: string
+
+        # rtsp
+        sourceProtocol:
+          type: string
+        sourceAnyPortEnable:
+          type: boolean
+        rtspRangeType:
+          type: string
+        rtspRangeStart:
+          type: string
+
+        # redirect
+        sourceRedirect:
+          type: string
+
+        # raspberry pi camera
         rpiCameraCamID:
           type: integer
         rpiCameraWidth:
@@ -231,7 +262,7 @@ components:
         rpiCameraMode:
           type: string
         rpiCameraFPS:
-          type: integer
+          type: number
         rpiCameraIDRPeriod:
           type: integer
         rpiCameraBitrate:
@@ -254,24 +285,6 @@ components:
           type: boolean
         rpiCameraTextOverlay:
           type: string
-
-        # authentication
-        publishUser:
-          type: string
-        publishPass:
-          type: string
-        publishIPs:
-          type: array
-          items:
-            type: string
-        readUser:
-          type: string
-        readPass:
-          type: string
-        readIPs:
-          type: array
-          items:
-            type: string
 
         # external commands
         runOnInit:
@@ -298,20 +311,14 @@ components:
     Path:
       type: object
       properties:
+        name:
+          type: string
         confName:
           type: string
         conf:
           $ref: '#/components/schemas/PathConf'
         source:
-          oneOf:
-          - $ref: '#/components/schemas/PathSourceRTSPSession'
-          - $ref: '#/components/schemas/PathSourceRTSPSSession'
-          - $ref: '#/components/schemas/PathSourceRTMPConn'
-          - $ref: '#/components/schemas/PathSourceRTMPSConn'
-          - $ref: '#/components/schemas/PathSourceRTSPSource'
-          - $ref: '#/components/schemas/PathSourceRTMPSource'
-          - $ref: '#/components/schemas/PathSourceHLSSource'
-          - $ref: '#/components/schemas/PathSourceRPICameraSource'
+          $ref: '#/components/schemas/PathSourceOrReader'
         sourceReady:
           type: boolean
         tracks:
@@ -324,133 +331,34 @@ components:
         readers:
           type: array
           items:
-            oneOf:
-            - $ref: '#/components/schemas/PathReaderHLSMuxer'
-            - $ref: '#/components/schemas/PathReaderRTMPConn'
-            - $ref: '#/components/schemas/PathReaderRTMPSConn'
-            - $ref: '#/components/schemas/PathReaderRTSPSession'
-            - $ref: '#/components/schemas/PathReaderRTSPSSession'
-            - $ref: '#/components/schemas/PathReaderWebRTCConn'
+            $ref: '#/components/schemas/PathSourceOrReader'
 
-    PathSourceRTSPSession:
+    PathSourceOrReader:
       type: object
       properties:
         type:
           type: string
-          enum: [rtspSession]
-        id:
-          type: string
-
-    PathSourceRTSPSSession:
-      type: object
-      properties:
-        type:
-          type: string
-          enum: [rtspsSession]
-        id:
-          type: string
-
-    PathSourceRTMPConn:
-      type: object
-      properties:
-        type:
-          type: string
-          enum: [rtmpConn]
-        id:
-          type: string
-
-    PathSourceRTMPSConn:
-      type: object
-      properties:
-        type:
-          type: string
-          enum: [rtmpsConn]
-        id:
-          type: string
-
-    PathSourceRTSPSource:
-      type: object
-      properties:
-        type:
-          type: string
-          enum: [rtspSource]
-
-    PathSourceRTMPSource:
-      type: object
-      properties:
-        type:
-          type: string
-          enum: [rtmpSource]
-
-    PathSourceHLSSource:
-      type: object
-      properties:
-        type:
-          type: string
-          enum: [hlsSource]
-
-    PathSourceRPICameraSource:
-      type: object
-      properties:
-        type:
-          type: string
-          enum: [rpiCameraSource]
-
-    PathReaderHLSMuxer:
-      type: object
-      properties:
-        type:
-          type: string
-          enum: [hlsMuxer]
-
-    PathReaderRTMPConn:
-      type: object
-      properties:
-        type:
-          type: string
-          enum: [rtmpConn]
-        id:
-          type: string
-
-    PathReaderRTMPSConn:
-      type: object
-      properties:
-        type:
-          type: string
-          enum: [rtmpsConn]
-        id:
-          type: string
-
-    PathReaderRTSPSession:
-      type: object
-      properties:
-        type:
-          type: string
-          enum: [rtspSession]
-        id:
-          type: string
-
-    PathReaderRTSPSSession:
-      type: object
-      properties:
-        type:
-          type: string
-          enum: [rtspsSession]
-        id:
-          type: string
-
-    PathReaderWebRTCConn:
-      type: object
-      properties:
-        type:
-          type: string
-          enum: [webRTCConn]
+          enum:
+          - hlsMuxer
+          - hlsSource
+          - rpiCameraSource
+          - rtmpSession
+          - rtmpSource
+          - rtmpsSession
+          - rtspSession
+          - rtspSource
+          - rtspsSession
+          - redirect
+          - udpSource
+          - webRTCSession
         id:
           type: string
 
     RTSPConn:
       type: object
       properties:
+        id:
+          type: string
         created:
           type: string
         remoteAddr:
@@ -465,6 +373,8 @@ components:
     RTSPSession:
       type: object
       properties:
+        id:
+          type: string
         created:
           type: string
         remoteAddr:
@@ -482,6 +392,8 @@ components:
     RTMPConn:
       type: object
       properties:
+        id:
+          type: string
         created:
           type: string
         remoteAddr:
@@ -499,6 +411,8 @@ components:
     HLSMuxer:
       type: object
       properties:
+        path:
+          type: string
         created:
           type: string
         lastRequest:
@@ -510,46 +424,58 @@ components:
     HLSMuxersList:
       type: object
       properties:
+        pageCount:
+          type: integer
         items:
-          type: object
-          additionalProperties:
+          type: array
+          items:
             $ref: '#/components/schemas/HLSMuxer'
 
     PathsList:
       type: object
       properties:
+        pageCount:
+          type: integer
         items:
-          type: object
-          additionalProperties:
+          type: array
+          items:
             $ref: '#/components/schemas/Path'
 
     RTMPConnsList:
       type: object
       properties:
+        pageCount:
+          type: integer
         items:
-          type: object
-          additionalProperties:
+          type: array
+          items:
             $ref: '#/components/schemas/RTMPConn'
 
     RTSPConnsList:
       type: object
       properties:
+        pageCount:
+          type: integer
         items:
-          type: object
-          additionalProperties:
+          type: array
+          items:
             $ref: '#/components/schemas/RTSPConn'
 
     RTSPSessionsList:
       type: object
       properties:
+        pageCount:
+          type: integer
         items:
-          type: object
-          additionalProperties:
+          type: array
+          items:
             $ref: '#/components/schemas/RTSPSession'
 
-    WebRTCConn:
+    WebRTCSession:
       type: object
       properties:
+        id:
+          type: string
         created:
           type: string
         remoteAddr:
@@ -560,6 +486,9 @@ components:
           type: string
         remoteCandidate:
           type: string
+        state:
+          type: string
+          enum: [read, publish]
         bytesReceived:
           type: integer
           format: int64
@@ -567,16 +496,18 @@ components:
           type: integer
           format: int64
 
-    WebRTCConnsList:
+    WebRTCSessionsList:
       type: object
       properties:
+        pageCount:
+          type: integer
         items:
-          type: object
-          additionalProperties:
-            $ref: '#/components/schemas/WebRTCConn'
+          type: array
+          items:
+            $ref: '#/components/schemas/WebRTCSession'
 
 paths:
-  /v1/config/get:
+  /v2/config/get:
     get:
       operationId: configGet
       summary: returns the configuration.
@@ -593,11 +524,11 @@ paths:
         '500':
           description: internal server error.
 
-  /v1/config/set:
+  /v2/config/set:
     post:
       operationId: configSet
       summary: changes the configuration.
-      description: all fields are optional. paths can't be edited with this request, use /v1/config/paths/{operation}/{name} to edit them.
+      description: all fields are optional. paths can't be edited with this request, use /v2/config/paths/{operation}/{name} to edit them.
       requestBody:
         required: true
         content:
@@ -612,7 +543,7 @@ paths:
         '500':
           description: internal server error.
 
-  /v1/config/paths/add/{name}:
+  /v2/config/paths/add/{name}:
     post:
       operationId: configPathsAdd
       summary: adds the configuration of a path.
@@ -638,7 +569,7 @@ paths:
         '500':
           description: internal server error.
 
-  /v1/config/paths/edit/{name}:
+  /v2/config/paths/edit/{name}:
     post:
       operationId: configPathsEdit
       summary: changes the configuration of a path.
@@ -664,7 +595,7 @@ paths:
         '500':
           description: internal server error.
 
-  /v1/config/paths/remove/{name}:
+  /v2/config/paths/remove/{name}:
     post:
       operationId: configPathsRemove
       summary: removes the configuration of a path.
@@ -684,11 +615,24 @@ paths:
         '500':
           description: internal server error.
 
-  /v1/hlsmuxers/list:
+  /v2/hlsmuxers/list:
     get:
       operationId: hlsMuxersList
       summary: returns all HLS muxers.
       description: ''
+      parameters:
+      - name: page
+        in: query
+        description: page number.
+        schema:
+          type: number
+          default: 0
+      - name: itemsPerPage
+        in: query
+        description: items per page.
+        schema:
+          type: number
+          default: 100
       responses:
         '200':
           description: the request was successful.
@@ -701,11 +645,48 @@ paths:
         '500':
           description: internal server error.
 
-  /v1/paths/list:
+  /v2/hlsmuxers/get/{name}:
+    get:
+      operationId: hlsMuxersGet
+      summary: returns a HLS muxer.
+      description: ''
+      parameters:
+      - name: name
+        in: path
+        required: true
+        description: name of the muxer.
+        schema:
+          type: string
+      responses:
+        '200':
+          description: the request was successful.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HLSMuxer'
+        '400':
+          description: invalid request.
+        '500':
+          description: internal server error.
+
+  /v2/paths/list:
     get:
       operationId: pathsList
       summary: returns all paths.
       description: ''
+      parameters:
+      - name: page
+        in: query
+        description: page number.
+        schema:
+          type: number
+          default: 0
+      - name: itemsPerPage
+        in: query
+        description: items per page.
+        schema:
+          type: number
+          default: 100
       responses:
         '200':
           description: the request was successful.
@@ -718,11 +699,48 @@ paths:
         '500':
           description: internal server error.
 
-  /v1/rtspconns/list:
+  /v2/paths/get/{name}:
+    get:
+      operationId: pathsGet
+      summary: returns a path.
+      description: ''
+      parameters:
+      - name: name
+        in: path
+        required: true
+        description: name of the path.
+        schema:
+          type: string
+      responses:
+        '200':
+          description: the request was successful.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Path'
+        '400':
+          description: invalid request.
+        '500':
+          description: internal server error.
+
+  /v2/rtspconns/list:
     get:
       operationId: rtspConnsList
       summary: returns all RTSP connections.
       description: ''
+      parameters:
+      - name: page
+        in: query
+        description: page number.
+        schema:
+          type: number
+          default: 0
+      - name: itemsPerPage
+        in: query
+        description: items per page.
+        schema:
+          type: number
+          default: 100
       responses:
         '200':
           description: the request was successful.
@@ -735,11 +753,48 @@ paths:
         '500':
           description: internal server error.
 
-  /v1/rtspsessions/list:
+  /v2/rtspconns/get/{id}:
+    get:
+      operationId: rtspConnsGet
+      summary: returns a RTSP connection.
+      description: ''
+      parameters:
+      - name: id
+        in: path
+        required: true
+        description: ID of the connection.
+        schema:
+          type: string
+      responses:
+        '200':
+          description: the request was successful.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RTSPConn'
+        '400':
+          description: invalid request.
+        '500':
+          description: internal server error.
+
+  /v2/rtspsessions/list:
     get:
       operationId: rtspSessionsList
       summary: returns all RTSP sessions.
       description: ''
+      parameters:
+      - name: page
+        in: query
+        description: page number.
+        schema:
+          type: number
+          default: 0
+      - name: itemsPerPage
+        in: query
+        description: items per page.
+        schema:
+          type: number
+          default: 100
       responses:
         '200':
           description: the request was successful.
@@ -752,7 +807,31 @@ paths:
         '500':
           description: internal server error.
 
-  /v1/rtspsessions/kick/{id}:
+  /v2/rtspsessions/get/{id}:
+    get:
+      operationId: rtspSessionsGet
+      summary: returns a RTSP session.
+      description: ''
+      parameters:
+      - name: id
+        in: path
+        required: true
+        description: ID of the connection.
+        schema:
+          type: string
+      responses:
+        '200':
+          description: the request was successful.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RTSPSession'
+        '400':
+          description: invalid request.
+        '500':
+          description: internal server error.
+
+  /v2/rtspsessions/kick/{id}:
     post:
       operationId: rtspSessionsKick
       summary: kicks out a RTSP session from the server.
@@ -761,7 +840,7 @@ paths:
       - name: id
         in: path
         required: true
-        description: the ID of the session.
+        description: ID of the session.
         schema:
           type: string
       responses:
@@ -772,11 +851,24 @@ paths:
         '500':
           description: internal server error.
 
-  /v1/rtspsconns/list:
+  /v2/rtspsconns/list:
     get:
       operationId: rtspsConnsList
       summary: returns all RTSPS connections.
       description: ''
+      parameters:
+      - name: page
+        in: query
+        description: page number.
+        schema:
+          type: number
+          default: 0
+      - name: itemsPerPage
+        in: query
+        description: items per page.
+        schema:
+          type: number
+          default: 100
       responses:
         '200':
           description: the request was successful.
@@ -789,11 +881,48 @@ paths:
         '500':
           description: internal server error.
 
-  /v1/rtspssessions/list:
+  /v2/rtspsconns/get/{id}:
+    get:
+      operationId: rtspsConnsGet
+      summary: returns a RTSPS connection.
+      description: ''
+      parameters:
+      - name: id
+        in: path
+        required: true
+        description: ID of the connection.
+        schema:
+          type: string
+      responses:
+        '200':
+          description: the request was successful.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RTSPConn'
+        '400':
+          description: invalid request.
+        '500':
+          description: internal server error.
+
+  /v2/rtspssessions/list:
     get:
       operationId: rtspsSessionsList
       summary: returns all RTSPS sessions.
       description: ''
+      parameters:
+      - name: page
+        in: query
+        description: page number.
+        schema:
+          type: number
+          default: 0
+      - name: itemsPerPage
+        in: query
+        description: items per page.
+        schema:
+          type: number
+          default: 100
       responses:
         '200':
           description: the request was successful.
@@ -806,7 +935,31 @@ paths:
         '500':
           description: internal server error.
 
-  /v1/rtspssessions/kick/{id}:
+  /v2/rtspssessions/get/{id}:
+    get:
+      operationId: rtspsSessionsGet
+      summary: returns a RTSPS session.
+      description: ''
+      parameters:
+      - name: id
+        in: path
+        required: true
+        description: ID of the connection.
+        schema:
+          type: string
+      responses:
+        '200':
+          description: the request was successful.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RTSPSession'
+        '400':
+          description: invalid request.
+        '500':
+          description: internal server error.
+
+  /v2/rtspssessions/kick/{id}:
     post:
       operationId: rtspsSessionsKick
       summary: kicks out a RTSPS session from the server.
@@ -815,7 +968,7 @@ paths:
       - name: id
         in: path
         required: true
-        description: the ID of the session.
+        description: ID of the session.
         schema:
           type: string
       responses:
@@ -826,11 +979,24 @@ paths:
         '500':
           description: internal server error.
 
-  /v1/rtmpconns/list:
+  /v2/rtmpconns/list:
     get:
       operationId: rtmpConnsList
       summary: returns all RTMP connections.
       description: ''
+      parameters:
+      - name: page
+        in: query
+        description: page number.
+        schema:
+          type: number
+          default: 0
+      - name: itemsPerPage
+        in: query
+        description: items per page.
+        schema:
+          type: number
+          default: 100
       responses:
         '200':
           description: the request was successful.
@@ -843,7 +1009,31 @@ paths:
         '500':
           description: internal server error.
 
-  /v1/rtmpconns/kick/{id}:
+  /v2/rtmpconns/get/{id}:
+    get:
+      operationId: rtmpConnectionsGet
+      summary: returns a RTMP connection.
+      description: ''
+      parameters:
+      - name: id
+        in: path
+        required: true
+        description: ID of the connection.
+        schema:
+          type: string
+      responses:
+        '200':
+          description: the request was successful.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RTMPConn'
+        '400':
+          description: invalid request.
+        '500':
+          description: internal server error.
+
+  /v2/rtmpconns/kick/{id}:
     post:
       operationId: rtmpConnsKick
       summary: kicks out a RTMP connection from the server.
@@ -852,7 +1042,7 @@ paths:
       - name: id
         in: path
         required: true
-        description: the ID of the connection.
+        description: ID of the connection.
         schema:
           type: string
       responses:
@@ -863,11 +1053,24 @@ paths:
         '500':
           description: internal server error.
 
-  /v1/rtmpsconns/list:
+  /v2/rtmpsconns/list:
     get:
       operationId: rtmpsConnsList
       summary: returns all RTMPS connections.
       description: ''
+      parameters:
+      - name: page
+        in: query
+        description: page number.
+        schema:
+          type: number
+          default: 0
+      - name: itemsPerPage
+        in: query
+        description: items per page.
+        schema:
+          type: number
+          default: 100
       responses:
         '200':
           description: the request was successful.
@@ -880,7 +1083,31 @@ paths:
         '500':
           description: internal server error.
 
-  /v1/rtmpsconns/kick/{id}:
+  /v2/rtmpsconns/get/{id}:
+    get:
+      operationId: rtmpsConnectionsGet
+      summary: returns a RTMPS connection.
+      description: ''
+      parameters:
+      - name: id
+        in: path
+        required: true
+        description: ID of the connection.
+        schema:
+          type: string
+      responses:
+        '200':
+          description: the request was successful.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RTMPConn'
+        '400':
+          description: invalid request.
+        '500':
+          description: internal server error.
+
+  /v2/rtmpsconns/kick/{id}:
     post:
       operationId: rtmpsConnsKick
       summary: kicks out a RTMPS connection from the server.
@@ -889,7 +1116,7 @@ paths:
       - name: id
         in: path
         required: true
-        description: the ID of the connection.
+        description: ID of the connection.
         schema:
           type: string
       responses:
@@ -900,33 +1127,70 @@ paths:
         '500':
           description: internal server error.
 
-  /v1/webrtcconns/list:
+  /v2/webrtcsessions/list:
     get:
-      operationId: webrtcConnsList
-      summary: returns all WebRTC connections.
+      operationId: webrtcSessionsList
+      summary: returns all WebRTC sessions.
       description: ''
+      parameters:
+      - name: page
+        in: query
+        description: page number.
+        schema:
+          type: number
+          default: 0
+      - name: itemsPerPage
+        in: query
+        description: items per page.
+        schema:
+          type: number
+          default: 100
       responses:
         '200':
           description: the request was successful.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/WebRTCConnsList'
+                $ref: '#/components/schemas/WebRTCSessionsList'
         '400':
           description: invalid request.
         '500':
           description: internal server error.
 
-  /v1/webrtcconns/kick/{id}:
-    post:
-      operationId: webrtcConnsKick
-      summary: kicks out a WebRTC connection from the server.
+  /v2/webrtcsessions/get/{id}:
+    get:
+      operationId: webrtcSessionsGet
+      summary: returns a WebRTC session.
       description: ''
       parameters:
       - name: id
         in: path
         required: true
-        description: the ID of the session.
+        description: ID of the session.
+        schema:
+          type: string
+      responses:
+        '200':
+          description: the request was successful.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebRTCSession'
+        '400':
+          description: invalid request.
+        '500':
+          description: internal server error.
+
+  /v2/webrtcsessions/kick/{id}:
+    post:
+      operationId: webrtcSessionsKick
+      summary: kicks out a WebRTC session from the server.
+      description: ''
+      parameters:
+      - name: id
+        in: path
+        required: true
+        description: ID of the session.
         schema:
           type: string
       responses:

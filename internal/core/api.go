@@ -1,19 +1,17 @@
 package core
 
 import (
-	"context"
 	"encoding/json"
-	"log"
-	"net"
 	"net/http"
 	"reflect"
+	"strconv"
 	"sync"
-	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 
-	"github.com/aler9/mediamtx/internal/conf"
-	"github.com/aler9/mediamtx/internal/logger"
+	"github.com/bluenviron/mediamtx/internal/conf"
+	"github.com/bluenviron/mediamtx/internal/logger"
 )
 
 func interfaceIsEmpty(i interface{}) bool {
@@ -78,23 +76,86 @@ func loadConfPathData(ctx *gin.Context) (interface{}, error) {
 	return in, err
 }
 
-type apiPathManager interface {
-	apiPathsList() pathAPIPathsListRes
+func paginate2(itemsPtr interface{}, itemsPerPage int, page int) int {
+	ritems := reflect.ValueOf(itemsPtr).Elem()
+
+	itemsLen := ritems.Len()
+	if itemsLen == 0 {
+		return 0
+	}
+
+	pageCount := (itemsLen / itemsPerPage)
+	if (itemsLen % itemsPerPage) != 0 {
+		pageCount++
+	}
+
+	min := page * itemsPerPage
+	if min >= itemsLen {
+		min = itemsLen - 1
+	}
+
+	max := (page + 1) * itemsPerPage
+	if max >= itemsLen {
+		max = itemsLen
+	}
+
+	ritems.Set(ritems.Slice(min, max))
+
+	return pageCount
 }
 
-type apiHLSServer interface {
-	apiMuxersList() hlsServerAPIMuxersListRes
+func paginate(itemsPtr interface{}, itemsPerPageStr string, pageStr string) (int, error) {
+	itemsPerPage := 100
+
+	if itemsPerPageStr != "" {
+		tmp, err := strconv.ParseUint(itemsPerPageStr, 10, 31)
+		if err != nil {
+			return 0, err
+		}
+		itemsPerPage = int(tmp)
+	}
+
+	page := 0
+
+	if pageStr != "" {
+		tmp, err := strconv.ParseUint(pageStr, 10, 31)
+		if err != nil {
+			return 0, err
+		}
+		page = int(tmp)
+	}
+
+	return paginate2(itemsPtr, itemsPerPage, page), nil
+}
+
+type apiPathManager interface {
+	apiPathsList() (*apiPathsList, error)
+	apiPathsGet(string) (*apiPath, error)
+}
+
+type apiHLSManager interface {
+	apiMuxersList() (*apiHLSMuxersList, error)
+	apiMuxersGet(string) (*apiHLSMuxer, error)
 }
 
 type apiRTSPServer interface {
-	apiConnsList() rtspServerAPIConnsListRes
-	apiSessionsList() rtspServerAPISessionsListRes
-	apiSessionsKick(string) rtspServerAPISessionsKickRes
+	apiConnsList() (*apiRTSPConnsList, error)
+	apiConnsGet(uuid.UUID) (*apiRTSPConn, error)
+	apiSessionsList() (*apiRTSPSessionsList, error)
+	apiSessionsGet(uuid.UUID) (*apiRTSPSession, error)
+	apiSessionsKick(uuid.UUID) error
 }
 
 type apiRTMPServer interface {
-	apiConnsList() rtmpServerAPIConnsListRes
-	apiConnsKick(id string) rtmpServerAPIConnsKickRes
+	apiConnsList() (*apiRTMPConnsList, error)
+	apiConnsGet(uuid.UUID) (*apiRTMPConn, error)
+	apiConnsKick(uuid.UUID) error
+}
+
+type apiWebRTCManager interface {
+	apiSessionsList() (*apiWebRTCSessionsList, error)
+	apiSessionsGet(uuid.UUID) (*apiWebRTCSession, error)
+	apiSessionsKick(uuid.UUID) error
 }
 
 type apiParent interface {
@@ -102,24 +163,18 @@ type apiParent interface {
 	apiConfigSet(conf *conf.Conf)
 }
 
-type apiWebRTCServer interface {
-	apiConnsList() webRTCServerAPIConnsListRes
-	apiConnsKick(id string) webRTCServerAPIConnsKickRes
-}
-
 type api struct {
-	conf         *conf.Conf
-	pathManager  apiPathManager
-	rtspServer   apiRTSPServer
-	rtspsServer  apiRTSPServer
-	rtmpServer   apiRTMPServer
-	rtmpsServer  apiRTMPServer
-	hlsServer    apiHLSServer
-	webRTCServer apiWebRTCServer
-	parent       apiParent
+	conf          *conf.Conf
+	pathManager   apiPathManager
+	rtspServer    apiRTSPServer
+	rtspsServer   apiRTSPServer
+	rtmpServer    apiRTMPServer
+	rtmpsServer   apiRTMPServer
+	hlsManager    apiHLSManager
+	webRTCManager apiWebRTCManager
+	parent        apiParent
 
-	ln         net.Listener
-	httpServer *http.Server
+	httpServer *httpServer
 	mutex      sync.Mutex
 }
 
@@ -132,26 +187,20 @@ func newAPI(
 	rtspsServer apiRTSPServer,
 	rtmpServer apiRTMPServer,
 	rtmpsServer apiRTMPServer,
-	hlsServer apiHLSServer,
-	webRTCServer apiWebRTCServer,
+	hlsManager apiHLSManager,
+	webRTCManager apiWebRTCManager,
 	parent apiParent,
 ) (*api, error) {
-	ln, err := net.Listen(restrictNetwork("tcp", address))
-	if err != nil {
-		return nil, err
-	}
-
 	a := &api{
-		conf:         conf,
-		pathManager:  pathManager,
-		rtspServer:   rtspServer,
-		rtspsServer:  rtspsServer,
-		rtmpServer:   rtmpServer,
-		rtmpsServer:  rtmpsServer,
-		hlsServer:    hlsServer,
-		webRTCServer: webRTCServer,
-		parent:       parent,
-		ln:           ln,
+		conf:          conf,
+		pathManager:   pathManager,
+		rtspServer:    rtspServer,
+		rtspsServer:   rtspsServer,
+		rtmpServer:    rtmpServer,
+		rtmpsServer:   rtmpsServer,
+		hlsManager:    hlsManager,
+		webRTCManager: webRTCManager,
+		parent:        parent,
 	}
 
 	router := gin.New()
@@ -161,52 +210,65 @@ func newAPI(
 	router.NoRoute(mwLog, httpServerHeaderMiddleware)
 	group := router.Group("/", mwLog, httpServerHeaderMiddleware)
 
-	group.GET("/v1/config/get", a.onConfigGet)
-	group.POST("/v1/config/set", a.onConfigSet)
-	group.POST("/v1/config/paths/add/*name", a.onConfigPathsAdd)
-	group.POST("/v1/config/paths/edit/*name", a.onConfigPathsEdit)
-	group.POST("/v1/config/paths/remove/*name", a.onConfigPathsDelete)
+	group.GET("/v2/config/get", a.onConfigGet)
+	group.POST("/v2/config/set", a.onConfigSet)
+	group.POST("/v2/config/paths/add/*name", a.onConfigPathsAdd)
+	group.POST("/v2/config/paths/edit/*name", a.onConfigPathsEdit)
+	group.POST("/v2/config/paths/remove/*name", a.onConfigPathsDelete)
 
-	if !interfaceIsEmpty(a.hlsServer) {
-		group.GET("/v1/hlsmuxers/list", a.onHLSMuxersList)
+	if !interfaceIsEmpty(a.hlsManager) {
+		group.GET("/v2/hlsmuxers/list", a.onHLSMuxersList)
+		group.GET("/v2/hlsmuxers/get/:name", a.onHLSMuxersGet)
 	}
 
-	group.GET("/v1/paths/list", a.onPathsList)
+	group.GET("/v2/paths/list", a.onPathsList)
+	group.GET("/v2/paths/get/:name", a.onPathsGet)
 
 	if !interfaceIsEmpty(a.rtspServer) {
-		group.GET("/v1/rtspconns/list", a.onRTSPConnsList)
-		group.GET("/v1/rtspsessions/list", a.onRTSPSessionsList)
-		group.POST("/v1/rtspsessions/kick/:id", a.onRTSPSessionsKick)
+		group.GET("/v2/rtspconns/list", a.onRTSPConnsList)
+		group.GET("/v2/rtspconns/get/:id", a.onRTSPConnsGet)
+		group.GET("/v2/rtspsessions/list", a.onRTSPSessionsList)
+		group.GET("/v2/rtspsessions/get/:id", a.onRTSPSessionsGet)
+		group.POST("/v2/rtspsessions/kick/:id", a.onRTSPSessionsKick)
 	}
 
 	if !interfaceIsEmpty(a.rtspsServer) {
-		group.GET("/v1/rtspsconns/list", a.onRTSPSConnsList)
-		group.GET("/v1/rtspssessions/list", a.onRTSPSSessionsList)
-		group.POST("/v1/rtspssessions/kick/:id", a.onRTSPSSessionsKick)
+		group.GET("/v2/rtspsconns/list", a.onRTSPSConnsList)
+		group.GET("/v2/rtspsconns/get/:id", a.onRTSPSConnsGet)
+		group.GET("/v2/rtspssessions/list", a.onRTSPSSessionsList)
+		group.GET("/v2/rtspssessions/get/:id", a.onRTSPSSessionsGet)
+		group.POST("/v2/rtspssessions/kick/:id", a.onRTSPSSessionsKick)
 	}
 
 	if !interfaceIsEmpty(a.rtmpServer) {
-		group.GET("/v1/rtmpconns/list", a.onRTMPConnsList)
-		group.POST("/v1/rtmpconns/kick/:id", a.onRTMPConnsKick)
+		group.GET("/v2/rtmpconns/list", a.onRTMPConnsList)
+		group.GET("/v2/rtmpconns/get/:id", a.onRTMPConnsGet)
+		group.POST("/v2/rtmpconns/kick/:id", a.onRTMPConnsKick)
 	}
 
 	if !interfaceIsEmpty(a.rtmpsServer) {
-		group.GET("/v1/rtmpsconns/list", a.onRTMPSConnsList)
-		group.POST("/v1/rtmpsconns/kick/:id", a.onRTMPSConnsKick)
+		group.GET("/v2/rtmpsconns/list", a.onRTMPSConnsList)
+		group.GET("/v2/rtmpsconns/get/:id", a.onRTMPSConnsGet)
+		group.POST("/v2/rtmpsconns/kick/:id", a.onRTMPSConnsKick)
 	}
 
-	if !interfaceIsEmpty(a.webRTCServer) {
-		group.GET("/v1/webrtcconns/list", a.onWebRTCConnsList)
-		group.POST("/v1/webrtcconns/kick/:id", a.onWebRTCConnsKick)
+	if !interfaceIsEmpty(a.webRTCManager) {
+		group.GET("/v2/webrtcsessions/list", a.onWebRTCSessionsList)
+		group.GET("/v2/webrtcsessions/get/:id", a.onWebRTCSessionsGet)
+		group.POST("/v2/webrtcsessions/kick/:id", a.onWebRTCSessionsKick)
 	}
 
-	a.httpServer = &http.Server{
-		Handler:           router,
-		ReadHeaderTimeout: time.Duration(readTimeout),
-		ErrorLog:          log.New(&nilWriter{}, "", 0),
+	var err error
+	a.httpServer, err = newHTTPServer(
+		address,
+		readTimeout,
+		"",
+		"",
+		router,
+	)
+	if err != nil {
+		return nil, err
 	}
-
-	go a.httpServer.Serve(ln)
 
 	a.Log(logger.Info, "listener opened on "+address)
 
@@ -215,8 +277,7 @@ func newAPI(
 
 func (a *api) close() {
 	a.Log(logger.Info, "listener is closing")
-	a.httpServer.Shutdown(context.Background())
-	a.ln.Close() // in case Shutdown() is called before Serve()
+	a.httpServer.close()
 }
 
 func (a *api) Log(level logger.Level, format string, args ...interface{}) {
@@ -285,6 +346,10 @@ func (a *api) onConfigPathsAdd(ctx *gin.Context) {
 	}
 
 	newConfPath := &conf.PathConf{}
+
+	// load default values
+	newConfPath.UnmarshalJSON([]byte("{}"))
+
 	fillStruct(newConfPath, in)
 
 	newConf.Paths[name] = newConfPath
@@ -382,40 +447,112 @@ func (a *api) onConfigPathsDelete(ctx *gin.Context) {
 }
 
 func (a *api) onPathsList(ctx *gin.Context) {
-	res := a.pathManager.apiPathsList()
-	if res.err != nil {
+	data, err := a.pathManager.apiPathsList()
+	if err != nil {
 		ctx.AbortWithStatus(http.StatusInternalServerError)
 		return
 	}
 
-	ctx.JSON(http.StatusOK, res.data)
+	data.ItemCount = len(data.Items)
+	pageCount, err := paginate(&data.Items, ctx.Query("itemsPerPage"), ctx.Query("page"))
+	if err != nil {
+		ctx.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
+	data.PageCount = pageCount
+
+	ctx.JSON(http.StatusOK, data)
+}
+
+func (a *api) onPathsGet(ctx *gin.Context) {
+	data, err := a.pathManager.apiPathsGet(ctx.Param("name"))
+	if err != nil {
+		if err.Error() == "not found" {
+			ctx.AbortWithStatus(http.StatusNotFound)
+			return
+		}
+		ctx.AbortWithStatus(http.StatusInternalServerError)
+		return
+	}
+
+	ctx.JSON(http.StatusOK, data)
 }
 
 func (a *api) onRTSPConnsList(ctx *gin.Context) {
-	res := a.rtspServer.apiConnsList()
-	if res.err != nil {
+	data, err := a.rtspServer.apiConnsList()
+	if err != nil {
 		ctx.AbortWithStatus(http.StatusInternalServerError)
 		return
 	}
 
-	ctx.JSON(http.StatusOK, res.data)
+	data.ItemCount = len(data.Items)
+	pageCount, err := paginate(&data.Items, ctx.Query("itemsPerPage"), ctx.Query("page"))
+	if err != nil {
+		ctx.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
+	data.PageCount = pageCount
+
+	ctx.JSON(http.StatusOK, data)
+}
+
+func (a *api) onRTSPConnsGet(ctx *gin.Context) {
+	uuid, err := uuid.Parse(ctx.Param("id"))
+	if err != nil {
+		ctx.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
+
+	data, err := a.rtspServer.apiConnsGet(uuid)
+	if err != nil {
+		return
+	}
+
+	ctx.JSON(http.StatusOK, data)
 }
 
 func (a *api) onRTSPSessionsList(ctx *gin.Context) {
-	res := a.rtspServer.apiSessionsList()
-	if res.err != nil {
+	data, err := a.rtspServer.apiSessionsList()
+	if err != nil {
 		ctx.AbortWithStatus(http.StatusInternalServerError)
 		return
 	}
 
-	ctx.JSON(http.StatusOK, res.data)
+	data.ItemCount = len(data.Items)
+	pageCount, err := paginate(&data.Items, ctx.Query("itemsPerPage"), ctx.Query("page"))
+	if err != nil {
+		ctx.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
+	data.PageCount = pageCount
+
+	ctx.JSON(http.StatusOK, data)
+}
+
+func (a *api) onRTSPSessionsGet(ctx *gin.Context) {
+	uuid, err := uuid.Parse(ctx.Param("id"))
+	if err != nil {
+		ctx.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
+
+	data, err := a.rtspServer.apiSessionsGet(uuid)
+	if err != nil {
+		return
+	}
+
+	ctx.JSON(http.StatusOK, data)
 }
 
 func (a *api) onRTSPSessionsKick(ctx *gin.Context) {
-	id := ctx.Param("id")
+	uuid, err := uuid.Parse(ctx.Param("id"))
+	if err != nil {
+		ctx.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
 
-	res := a.rtspServer.apiSessionsKick(id)
-	if res.err != nil {
+	err = a.rtspServer.apiSessionsKick(uuid)
+	if err != nil {
 		return
 	}
 
@@ -423,30 +560,80 @@ func (a *api) onRTSPSessionsKick(ctx *gin.Context) {
 }
 
 func (a *api) onRTSPSConnsList(ctx *gin.Context) {
-	res := a.rtspsServer.apiConnsList()
-	if res.err != nil {
+	data, err := a.rtspsServer.apiConnsList()
+	if err != nil {
 		ctx.AbortWithStatus(http.StatusInternalServerError)
 		return
 	}
 
-	ctx.JSON(http.StatusOK, res.data)
+	data.ItemCount = len(data.Items)
+	pageCount, err := paginate(&data.Items, ctx.Query("itemsPerPage"), ctx.Query("page"))
+	if err != nil {
+		ctx.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
+	data.PageCount = pageCount
+
+	ctx.JSON(http.StatusOK, data)
+}
+
+func (a *api) onRTSPSConnsGet(ctx *gin.Context) {
+	uuid, err := uuid.Parse(ctx.Param("id"))
+	if err != nil {
+		ctx.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
+
+	data, err := a.rtspsServer.apiConnsGet(uuid)
+	if err != nil {
+		return
+	}
+
+	ctx.JSON(http.StatusOK, data)
 }
 
 func (a *api) onRTSPSSessionsList(ctx *gin.Context) {
-	res := a.rtspsServer.apiSessionsList()
-	if res.err != nil {
+	data, err := a.rtspsServer.apiSessionsList()
+	if err != nil {
 		ctx.AbortWithStatus(http.StatusInternalServerError)
 		return
 	}
 
-	ctx.JSON(http.StatusOK, res.data)
+	data.ItemCount = len(data.Items)
+	pageCount, err := paginate(&data.Items, ctx.Query("itemsPerPage"), ctx.Query("page"))
+	if err != nil {
+		ctx.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
+	data.PageCount = pageCount
+
+	ctx.JSON(http.StatusOK, data)
+}
+
+func (a *api) onRTSPSSessionsGet(ctx *gin.Context) {
+	uuid, err := uuid.Parse(ctx.Param("id"))
+	if err != nil {
+		ctx.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
+
+	data, err := a.rtspsServer.apiSessionsGet(uuid)
+	if err != nil {
+		return
+	}
+
+	ctx.JSON(http.StatusOK, data)
 }
 
 func (a *api) onRTSPSSessionsKick(ctx *gin.Context) {
-	id := ctx.Param("id")
+	uuid, err := uuid.Parse(ctx.Param("id"))
+	if err != nil {
+		ctx.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
 
-	res := a.rtspsServer.apiSessionsKick(id)
-	if res.err != nil {
+	err = a.rtspsServer.apiSessionsKick(uuid)
+	if err != nil {
 		return
 	}
 
@@ -454,20 +641,47 @@ func (a *api) onRTSPSSessionsKick(ctx *gin.Context) {
 }
 
 func (a *api) onRTMPConnsList(ctx *gin.Context) {
-	res := a.rtmpServer.apiConnsList()
-	if res.err != nil {
+	data, err := a.rtmpServer.apiConnsList()
+	if err != nil {
 		ctx.AbortWithStatus(http.StatusInternalServerError)
 		return
 	}
 
-	ctx.JSON(http.StatusOK, res.data)
+	data.ItemCount = len(data.Items)
+	pageCount, err := paginate(&data.Items, ctx.Query("itemsPerPage"), ctx.Query("page"))
+	if err != nil {
+		ctx.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
+	data.PageCount = pageCount
+
+	ctx.JSON(http.StatusOK, data)
+}
+
+func (a *api) onRTMPConnsGet(ctx *gin.Context) {
+	uuid, err := uuid.Parse(ctx.Param("id"))
+	if err != nil {
+		ctx.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
+
+	data, err := a.rtmpServer.apiConnsGet(uuid)
+	if err != nil {
+		return
+	}
+
+	ctx.JSON(http.StatusOK, data)
 }
 
 func (a *api) onRTMPConnsKick(ctx *gin.Context) {
-	id := ctx.Param("id")
+	uuid, err := uuid.Parse(ctx.Param("id"))
+	if err != nil {
+		ctx.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
 
-	res := a.rtmpServer.apiConnsKick(id)
-	if res.err != nil {
+	err = a.rtmpServer.apiConnsKick(uuid)
+	if err != nil {
 		return
 	}
 
@@ -475,20 +689,47 @@ func (a *api) onRTMPConnsKick(ctx *gin.Context) {
 }
 
 func (a *api) onRTMPSConnsList(ctx *gin.Context) {
-	res := a.rtmpsServer.apiConnsList()
-	if res.err != nil {
+	data, err := a.rtmpsServer.apiConnsList()
+	if err != nil {
 		ctx.AbortWithStatus(http.StatusInternalServerError)
 		return
 	}
 
-	ctx.JSON(http.StatusOK, res.data)
+	data.ItemCount = len(data.Items)
+	pageCount, err := paginate(&data.Items, ctx.Query("itemsPerPage"), ctx.Query("page"))
+	if err != nil {
+		ctx.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
+	data.PageCount = pageCount
+
+	ctx.JSON(http.StatusOK, data)
+}
+
+func (a *api) onRTMPSConnsGet(ctx *gin.Context) {
+	uuid, err := uuid.Parse(ctx.Param("id"))
+	if err != nil {
+		ctx.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
+
+	data, err := a.rtmpsServer.apiConnsGet(uuid)
+	if err != nil {
+		return
+	}
+
+	ctx.JSON(http.StatusOK, data)
 }
 
 func (a *api) onRTMPSConnsKick(ctx *gin.Context) {
-	id := ctx.Param("id")
+	uuid, err := uuid.Parse(ctx.Param("id"))
+	if err != nil {
+		ctx.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
 
-	res := a.rtmpsServer.apiConnsKick(id)
-	if res.err != nil {
+	err = a.rtmpsServer.apiConnsKick(uuid)
+	if err != nil {
 		return
 	}
 
@@ -496,30 +737,75 @@ func (a *api) onRTMPSConnsKick(ctx *gin.Context) {
 }
 
 func (a *api) onHLSMuxersList(ctx *gin.Context) {
-	res := a.hlsServer.apiMuxersList()
-	if res.err != nil {
+	data, err := a.hlsManager.apiMuxersList()
+	if err != nil {
 		ctx.AbortWithStatus(http.StatusInternalServerError)
 		return
 	}
 
-	ctx.JSON(http.StatusOK, res.data)
+	data.ItemCount = len(data.Items)
+	pageCount, err := paginate(&data.Items, ctx.Query("itemsPerPage"), ctx.Query("page"))
+	if err != nil {
+		ctx.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
+	data.PageCount = pageCount
+
+	ctx.JSON(http.StatusOK, data)
 }
 
-func (a *api) onWebRTCConnsList(ctx *gin.Context) {
-	res := a.webRTCServer.apiConnsList()
-	if res.err != nil {
+func (a *api) onHLSMuxersGet(ctx *gin.Context) {
+	data, err := a.hlsManager.apiMuxersGet(ctx.Param("name"))
+	if err != nil {
 		ctx.AbortWithStatus(http.StatusInternalServerError)
 		return
 	}
 
-	ctx.JSON(http.StatusOK, res.data)
+	ctx.JSON(http.StatusOK, data)
 }
 
-func (a *api) onWebRTCConnsKick(ctx *gin.Context) {
-	id := ctx.Param("id")
+func (a *api) onWebRTCSessionsList(ctx *gin.Context) {
+	data, err := a.webRTCManager.apiSessionsList()
+	if err != nil {
+		ctx.AbortWithStatus(http.StatusInternalServerError)
+		return
+	}
 
-	res := a.webRTCServer.apiConnsKick(id)
-	if res.err != nil {
+	data.ItemCount = len(data.Items)
+	pageCount, err := paginate(&data.Items, ctx.Query("itemsPerPage"), ctx.Query("page"))
+	if err != nil {
+		ctx.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
+	data.PageCount = pageCount
+
+	ctx.JSON(http.StatusOK, data)
+}
+
+func (a *api) onWebRTCSessionsGet(ctx *gin.Context) {
+	uuid, err := uuid.Parse(ctx.Param("id"))
+	if err != nil {
+		ctx.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
+
+	data, err := a.webRTCManager.apiSessionsGet(uuid)
+	if err != nil {
+		return
+	}
+
+	ctx.JSON(http.StatusOK, data)
+}
+
+func (a *api) onWebRTCSessionsKick(ctx *gin.Context) {
+	uuid, err := uuid.Parse(ctx.Param("id"))
+	if err != nil {
+		ctx.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
+
+	err = a.webRTCManager.apiSessionsKick(uuid)
+	if err != nil {
 		return
 	}
 

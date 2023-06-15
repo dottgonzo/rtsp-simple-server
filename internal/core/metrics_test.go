@@ -3,16 +3,18 @@ package core
 import (
 	"crypto/tls"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/bluenviron/gortsplib/v3"
 	"github.com/bluenviron/gortsplib/v3/pkg/formats"
 	"github.com/bluenviron/gortsplib/v3/pkg/media"
 	"github.com/stretchr/testify/require"
 
-	"github.com/aler9/mediamtx/internal/rtmp"
+	"github.com/bluenviron/mediamtx/internal/rtmp"
 )
 
 func TestMetrics(t *testing.T) {
@@ -36,8 +38,9 @@ func TestMetrics(t *testing.T) {
 	require.Equal(t, true, ok)
 	defer p.Close()
 
-	bo, err := httpPullFile("http://localhost:9998/metrics")
-	require.NoError(t, err)
+	hc := &http.Client{Transport: &http.Transport{}}
+
+	bo := httpPullFile(t, hc, "http://localhost:9998/metrics")
 
 	require.Equal(t, `paths 0
 hls_muxers 0
@@ -57,9 +60,9 @@ rtsps_sessions_bytes_sent 0
 rtmp_conns 0
 rtmp_conns_bytes_received 0
 rtmp_conns_bytes_sent 0
-webrtc_conns 0
-webrtc_conns_bytes_received 0
-webrtc_conns_bytes_sent 0
+webrtc_sessions 0
+webrtc_sessions_bytes_received 0
+webrtc_sessions_bytes_sent 0
 `, string(bo))
 
 	medi := testMediaH264
@@ -101,8 +104,9 @@ webrtc_conns_bytes_sent 0
 	err = conn.WriteTracks(videoTrack, nil)
 	require.NoError(t, err)
 
-	bo, err = httpPullFile("http://localhost:9998/metrics")
-	require.NoError(t, err)
+	time.Sleep(500 * time.Millisecond)
+
+	bo = httpPullFile(t, hc, "http://localhost:9998/metrics")
 
 	require.Regexp(t,
 		`^paths\{name=".*?",state="ready"\} 1`+"\n"+
@@ -132,9 +136,9 @@ webrtc_conns_bytes_sent 0
 			`rtmp_conns\{id=".*?",state="publish"\} 1`+"\n"+
 			`rtmp_conns_bytes_received\{id=".*?",state="publish"\} [0-9]+`+"\n"+
 			`rtmp_conns_bytes_sent\{id=".*?",state="publish"\} [0-9]+`+"\n"+
-			`webrtc_conns 0`+"\n"+
-			`webrtc_conns_bytes_received 0`+"\n"+
-			`webrtc_conns_bytes_sent 0`+"\n"+
+			`webrtc_sessions 0`+"\n"+
+			`webrtc_sessions_bytes_received 0`+"\n"+
+			`webrtc_sessions_bytes_sent 0`+"\n"+
 			"$",
 		string(bo))
 }

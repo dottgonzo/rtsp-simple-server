@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bluenviron/gortsplib/v3/pkg/headers"
 	"github.com/bluenviron/gortsplib/v3/pkg/url"
 )
 
@@ -42,47 +43,13 @@ type PathConf struct {
 	Regexp *regexp.Regexp `json:"-"`
 
 	// source
-	Source                     string         `json:"source"`
-	SourceProtocol             SourceProtocol `json:"sourceProtocol"`
-	SourceAnyPortEnable        bool           `json:"sourceAnyPortEnable"`
+	Source string `json:"source"`
+
+	// general
 	SourceFingerprint          string         `json:"sourceFingerprint"`
 	SourceOnDemand             bool           `json:"sourceOnDemand"`
 	SourceOnDemandStartTimeout StringDuration `json:"sourceOnDemandStartTimeout"`
 	SourceOnDemandCloseAfter   StringDuration `json:"sourceOnDemandCloseAfter"`
-	SourceRedirect             string         `json:"sourceRedirect"`
-	DisablePublisherOverride   bool           `json:"disablePublisherOverride"`
-	Fallback                   string         `json:"fallback"`
-	RPICameraCamID             int            `json:"rpiCameraCamID"`
-	RPICameraWidth             int            `json:"rpiCameraWidth"`
-	RPICameraHeight            int            `json:"rpiCameraHeight"`
-	RPICameraHFlip             bool           `json:"rpiCameraHFlip"`
-	RPICameraVFlip             bool           `json:"rpiCameraVFlip"`
-	RPICameraBrightness        float64        `json:"rpiCameraBrightness"`
-	RPICameraContrast          float64        `json:"rpiCameraContrast"`
-	RPICameraSaturation        float64        `json:"rpiCameraSaturation"`
-	RPICameraSharpness         float64        `json:"rpiCameraSharpness"`
-	RPICameraExposure          string         `json:"rpiCameraExposure"`
-	RPICameraAWB               string         `json:"rpiCameraAWB"`
-	RPICameraDenoise           string         `json:"rpiCameraDenoise"`
-	RPICameraShutter           int            `json:"rpiCameraShutter"`
-	RPICameraMetering          string         `json:"rpiCameraMetering"`
-	RPICameraGain              float64        `json:"rpiCameraGain"`
-	RPICameraEV                float64        `json:"rpiCameraEV"`
-	RPICameraROI               string         `json:"rpiCameraROI"`
-	RPICameraTuningFile        string         `json:"rpiCameraTuningFile"`
-	RPICameraMode              string         `json:"rpiCameraMode"`
-	RPICameraFPS               int            `json:"rpiCameraFPS"`
-	RPICameraIDRPeriod         int            `json:"rpiCameraIDRPeriod"`
-	RPICameraBitrate           int            `json:"rpiCameraBitrate"`
-	RPICameraProfile           string         `json:"rpiCameraProfile"`
-	RPICameraLevel             string         `json:"rpiCameraLevel"`
-	RPICameraAfMode            string         `json:"rpiCameraAfMode"`
-	RPICameraAfRange           string         `json:"rpiCameraAfRange"`
-	RPICameraAfSpeed           string         `json:"rpiCameraAfSpeed"`
-	RPICameraLensPosition      float64        `json:"rpiCameraLensPosition"`
-	RPICameraAfWindow          string         `json:"rpiCameraAfWindow"`
-	RPICameraTextOverlayEnable bool           `json:"rpiCameraTextOverlayEnable"`
-	RPICameraTextOverlay       string         `json:"rpiCameraTextOverlay"`
 
 	// authentication
 	PublishUser Credential `json:"publishUser"`
@@ -91,6 +58,52 @@ type PathConf struct {
 	ReadUser    Credential `json:"readUser"`
 	ReadPass    Credential `json:"readPass"`
 	ReadIPs     IPsOrCIDRs `json:"readIPs"`
+
+	// publisher
+	DisablePublisherOverride bool   `json:"disablePublisherOverride"`
+	Fallback                 string `json:"fallback"`
+
+	// rtsp
+	SourceProtocol      SourceProtocol `json:"sourceProtocol"`
+	SourceAnyPortEnable bool           `json:"sourceAnyPortEnable"`
+	RtspRangeType       RtspRangeType  `json:"rtspRangeType"`
+	RtspRangeStart      string         `json:"rtspRangeStart"`
+
+	// redirect
+	SourceRedirect string `json:"sourceRedirect"`
+
+	// raspberry pi camera
+	RPICameraCamID             int     `json:"rpiCameraCamID"`
+	RPICameraWidth             int     `json:"rpiCameraWidth"`
+	RPICameraHeight            int     `json:"rpiCameraHeight"`
+	RPICameraHFlip             bool    `json:"rpiCameraHFlip"`
+	RPICameraVFlip             bool    `json:"rpiCameraVFlip"`
+	RPICameraBrightness        float64 `json:"rpiCameraBrightness"`
+	RPICameraContrast          float64 `json:"rpiCameraContrast"`
+	RPICameraSaturation        float64 `json:"rpiCameraSaturation"`
+	RPICameraSharpness         float64 `json:"rpiCameraSharpness"`
+	RPICameraExposure          string  `json:"rpiCameraExposure"`
+	RPICameraAWB               string  `json:"rpiCameraAWB"`
+	RPICameraDenoise           string  `json:"rpiCameraDenoise"`
+	RPICameraShutter           int     `json:"rpiCameraShutter"`
+	RPICameraMetering          string  `json:"rpiCameraMetering"`
+	RPICameraGain              float64 `json:"rpiCameraGain"`
+	RPICameraEV                float64 `json:"rpiCameraEV"`
+	RPICameraROI               string  `json:"rpiCameraROI"`
+	RPICameraTuningFile        string  `json:"rpiCameraTuningFile"`
+	RPICameraMode              string  `json:"rpiCameraMode"`
+	RPICameraFPS               float64 `json:"rpiCameraFPS"`
+	RPICameraIDRPeriod         int     `json:"rpiCameraIDRPeriod"`
+	RPICameraBitrate           int     `json:"rpiCameraBitrate"`
+	RPICameraProfile           string  `json:"rpiCameraProfile"`
+	RPICameraLevel             string  `json:"rpiCameraLevel"`
+	RPICameraAfMode            string  `json:"rpiCameraAfMode"`
+	RPICameraAfRange           string  `json:"rpiCameraAfRange"`
+	RPICameraAfSpeed           string  `json:"rpiCameraAfSpeed"`
+	RPICameraLensPosition      float64 `json:"rpiCameraLensPosition"`
+	RPICameraAfWindow          string  `json:"rpiCameraAfWindow"`
+	RPICameraTextOverlayEnable bool    `json:"rpiCameraTextOverlayEnable"`
+	RPICameraTextOverlay       string  `json:"rpiCameraTextOverlay"`
 
 	// external commands
 	RunOnInit               string         `json:"runOnInit"`
@@ -252,17 +265,9 @@ func (pconf *PathConf) check(conf *Conf, name string) error {
 			"the stream is not provided by a publisher, but by a fixed source")
 	}
 
-	if pconf.PublishUser != "" && conf.ExternalAuthenticationURL != "" {
-		return fmt.Errorf("'publishUser' can't be used with 'externalAuthenticationURL'")
-	}
-
 	if len(pconf.PublishIPs) > 0 && pconf.Source != "publisher" {
 		return fmt.Errorf("'publishIPs' is useless when source is not 'publisher', since " +
 			"the stream is not provided by a publisher, but by a fixed source")
-	}
-
-	if len(pconf.PublishIPs) > 0 && conf.ExternalAuthenticationURL != "" {
-		return fmt.Errorf("'publishIPs' can't be used with 'externalAuthenticationURL'")
 	}
 
 	if (pconf.ReadUser != "" && pconf.ReadPass == "") ||
@@ -270,12 +275,22 @@ func (pconf *PathConf) check(conf *Conf, name string) error {
 		return fmt.Errorf("read username and password must be both filled")
 	}
 
-	if pconf.ReadUser != "" && conf.ExternalAuthenticationURL != "" {
-		return fmt.Errorf("'readUser' can't be used with 'externalAuthenticationURL'")
+	if contains(conf.AuthMethods, headers.AuthDigest) {
+		if strings.HasPrefix(string(pconf.PublishUser), "sha256:") ||
+			strings.HasPrefix(string(pconf.PublishPass), "sha256:") ||
+			strings.HasPrefix(string(pconf.ReadUser), "sha256:") ||
+			strings.HasPrefix(string(pconf.ReadPass), "sha256:") {
+			return fmt.Errorf("hashed credentials can't be used when the digest auth method is available")
+		}
 	}
 
-	if len(pconf.ReadIPs) > 0 && conf.ExternalAuthenticationURL != "" {
-		return fmt.Errorf("'readIPs' can't be used with 'externalAuthenticationURL'")
+	if conf.ExternalAuthenticationURL != "" {
+		if pconf.PublishUser != "" ||
+			len(pconf.PublishIPs) > 0 ||
+			pconf.ReadUser != "" ||
+			len(pconf.ReadIPs) > 0 {
+			return fmt.Errorf("credentials or IPs can't be used together with 'externalAuthenticationURL'")
+		}
 	}
 
 	if pconf.RunOnInit != "" && pconf.Regexp != nil {
@@ -336,8 +351,12 @@ func (pconf PathConf) HasOnDemandPublisher() bool {
 func (pconf *PathConf) UnmarshalJSON(b []byte) error {
 	// source
 	pconf.Source = "publisher"
+
+	// general
 	pconf.SourceOnDemandStartTimeout = 10 * StringDuration(time.Second)
 	pconf.SourceOnDemandCloseAfter = 10 * StringDuration(time.Second)
+
+	// raspberry pi camera
 	pconf.RPICameraWidth = 1920
 	pconf.RPICameraHeight = 1080
 	pconf.RPICameraContrast = 1

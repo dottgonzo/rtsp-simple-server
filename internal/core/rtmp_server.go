@@ -5,28 +5,18 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net"
+	"sort"
 	"sync"
-	"time"
 
-	"github.com/aler9/mediamtx/internal/conf"
-	"github.com/aler9/mediamtx/internal/externalcmd"
-	"github.com/aler9/mediamtx/internal/logger"
+	"github.com/google/uuid"
+
+	"github.com/bluenviron/mediamtx/internal/conf"
+	"github.com/bluenviron/mediamtx/internal/externalcmd"
+	"github.com/bluenviron/mediamtx/internal/logger"
 )
 
-type rtmpServerAPIConnsListItem struct {
-	Created       time.Time `json:"created"`
-	RemoteAddr    string    `json:"remoteAddr"`
-	State         string    `json:"state"`
-	BytesReceived uint64    `json:"bytesReceived"`
-	BytesSent     uint64    `json:"bytesSent"`
-}
-
-type rtmpServerAPIConnsListData struct {
-	Items map[string]rtmpServerAPIConnsListItem `json:"items"`
-}
-
 type rtmpServerAPIConnsListRes struct {
-	data *rtmpServerAPIConnsListData
+	data *apiRTMPConnsList
 	err  error
 }
 
@@ -34,13 +24,23 @@ type rtmpServerAPIConnsListReq struct {
 	res chan rtmpServerAPIConnsListRes
 }
 
+type rtmpServerAPIConnsGetRes struct {
+	data *apiRTMPConn
+	err  error
+}
+
+type rtmpServerAPIConnsGetReq struct {
+	uuid uuid.UUID
+	res  chan rtmpServerAPIConnsGetRes
+}
+
 type rtmpServerAPIConnsKickRes struct {
 	err error
 }
 
 type rtmpServerAPIConnsKickReq struct {
-	id  string
-	res chan rtmpServerAPIConnsKickRes
+	uuid uuid.UUID
+	res  chan rtmpServerAPIConnsKickRes
 }
 
 type rtmpServerParent interface {
@@ -48,18 +48,17 @@ type rtmpServerParent interface {
 }
 
 type rtmpServer struct {
-	externalAuthenticationURL string
-	readTimeout               conf.StringDuration
-	writeTimeout              conf.StringDuration
-	readBufferCount           int
-	isTLS                     bool
-	rtspAddress               string
-	runOnConnect              string
-	runOnConnectRestart       bool
-	externalCmdPool           *externalcmd.Pool
-	metrics                   *metrics
-	pathManager               *pathManager
-	parent                    rtmpServerParent
+	readTimeout         conf.StringDuration
+	writeTimeout        conf.StringDuration
+	readBufferCount     int
+	isTLS               bool
+	rtspAddress         string
+	runOnConnect        string
+	runOnConnectRestart bool
+	externalCmdPool     *externalcmd.Pool
+	metrics             *metrics
+	pathManager         *pathManager
+	parent              rtmpServerParent
 
 	ctx       context.Context
 	ctxCancel func()
@@ -70,12 +69,12 @@ type rtmpServer struct {
 	// in
 	chConnClose    chan *rtmpConn
 	chAPIConnsList chan rtmpServerAPIConnsListReq
+	chAPIConnsGet  chan rtmpServerAPIConnsGetReq
 	chAPIConnsKick chan rtmpServerAPIConnsKickReq
 }
 
 func newRTMPServer(
 	parentCtx context.Context,
-	externalAuthenticationURL string,
 	address string,
 	readTimeout conf.StringDuration,
 	writeTimeout conf.StringDuration,
@@ -111,25 +110,25 @@ func newRTMPServer(
 	ctx, ctxCancel := context.WithCancel(parentCtx)
 
 	s := &rtmpServer{
-		externalAuthenticationURL: externalAuthenticationURL,
-		readTimeout:               readTimeout,
-		writeTimeout:              writeTimeout,
-		readBufferCount:           readBufferCount,
-		rtspAddress:               rtspAddress,
-		runOnConnect:              runOnConnect,
-		runOnConnectRestart:       runOnConnectRestart,
-		isTLS:                     isTLS,
-		externalCmdPool:           externalCmdPool,
-		metrics:                   metrics,
-		pathManager:               pathManager,
-		parent:                    parent,
-		ctx:                       ctx,
-		ctxCancel:                 ctxCancel,
-		ln:                        ln,
-		conns:                     make(map[*rtmpConn]struct{}),
-		chConnClose:               make(chan *rtmpConn),
-		chAPIConnsList:            make(chan rtmpServerAPIConnsListReq),
-		chAPIConnsKick:            make(chan rtmpServerAPIConnsKickReq),
+		readTimeout:         readTimeout,
+		writeTimeout:        writeTimeout,
+		readBufferCount:     readBufferCount,
+		rtspAddress:         rtspAddress,
+		runOnConnect:        runOnConnect,
+		runOnConnectRestart: runOnConnectRestart,
+		isTLS:               isTLS,
+		externalCmdPool:     externalCmdPool,
+		metrics:             metrics,
+		pathManager:         pathManager,
+		parent:              parent,
+		ctx:                 ctx,
+		ctxCancel:           ctxCancel,
+		ln:                  ln,
+		conns:               make(map[*rtmpConn]struct{}),
+		chConnClose:         make(chan *rtmpConn),
+		chAPIConnsList:      make(chan rtmpServerAPIConnsListReq),
+		chAPIConnsGet:       make(chan rtmpServerAPIConnsGetReq),
+		chAPIConnsKick:      make(chan rtmpServerAPIConnsKickReq),
 	}
 
 	s.Log(logger.Info, "listener opened on %s", address)
@@ -200,7 +199,6 @@ outer:
 			c := newRTMPConn(
 				s.ctx,
 				s.isTLS,
-				s.externalAuthenticationURL,
 				s.rtspAddress,
 				s.readTimeout,
 				s.writeTimeout,
@@ -218,47 +216,39 @@ outer:
 			delete(s.conns, c)
 
 		case req := <-s.chAPIConnsList:
-			data := &rtmpServerAPIConnsListData{
-				Items: make(map[string]rtmpServerAPIConnsListItem),
+			data := &apiRTMPConnsList{
+				Items: []*apiRTMPConn{},
 			}
 
 			for c := range s.conns {
-				data.Items[c.uuid.String()] = rtmpServerAPIConnsListItem{
-					Created:    c.created,
-					RemoteAddr: c.remoteAddr().String(),
-					State: func() string {
-						switch c.safeState() {
-						case rtmpConnStateRead:
-							return "read"
-
-						case rtmpConnStatePublish:
-							return "publish"
-						}
-						return "idle"
-					}(),
-					BytesReceived: c.conn.BytesReceived(),
-					BytesSent:     c.conn.BytesSent(),
-				}
+				data.Items = append(data.Items, c.apiItem())
 			}
+
+			sort.Slice(data.Items, func(i, j int) bool {
+				return data.Items[i].Created.Before(data.Items[j].Created)
+			})
 
 			req.res <- rtmpServerAPIConnsListRes{data: data}
 
-		case req := <-s.chAPIConnsKick:
-			res := func() bool {
-				for c := range s.conns {
-					if c.uuid.String() == req.id {
-						delete(s.conns, c)
-						c.close()
-						return true
-					}
-				}
-				return false
-			}()
-			if res {
-				req.res <- rtmpServerAPIConnsKickRes{}
-			} else {
-				req.res <- rtmpServerAPIConnsKickRes{fmt.Errorf("not found")}
+		case req := <-s.chAPIConnsGet:
+			c := s.findConnByUUID(req.uuid)
+			if c == nil {
+				req.res <- rtmpServerAPIConnsGetRes{err: fmt.Errorf("not found")}
+				continue
 			}
+
+			req.res <- rtmpServerAPIConnsGetRes{data: c.apiItem()}
+
+		case req := <-s.chAPIConnsKick:
+			c := s.findConnByUUID(req.uuid)
+			if c == nil {
+				req.res <- rtmpServerAPIConnsKickRes{fmt.Errorf("not found")}
+				continue
+			}
+
+			delete(s.conns, c)
+			c.close()
+			req.res <- rtmpServerAPIConnsKickRes{}
 
 		case <-s.ctx.Done():
 			break outer
@@ -274,6 +264,15 @@ outer:
 	}
 }
 
+func (s *rtmpServer) findConnByUUID(uuid uuid.UUID) *rtmpConn {
+	for c := range s.conns {
+		if c.uuid == uuid {
+			return c
+		}
+	}
+	return nil
+}
+
 // connClose is called by rtmpConn.
 func (s *rtmpServer) connClose(c *rtmpConn) {
 	select {
@@ -283,32 +282,51 @@ func (s *rtmpServer) connClose(c *rtmpConn) {
 }
 
 // apiConnsList is called by api.
-func (s *rtmpServer) apiConnsList() rtmpServerAPIConnsListRes {
+func (s *rtmpServer) apiConnsList() (*apiRTMPConnsList, error) {
 	req := rtmpServerAPIConnsListReq{
 		res: make(chan rtmpServerAPIConnsListRes),
 	}
 
 	select {
 	case s.chAPIConnsList <- req:
-		return <-req.res
+		res := <-req.res
+		return res.data, res.err
 
 	case <-s.ctx.Done():
-		return rtmpServerAPIConnsListRes{err: fmt.Errorf("terminated")}
+		return nil, fmt.Errorf("terminated")
+	}
+}
+
+// apiConnsGet is called by api.
+func (s *rtmpServer) apiConnsGet(uuid uuid.UUID) (*apiRTMPConn, error) {
+	req := rtmpServerAPIConnsGetReq{
+		uuid: uuid,
+		res:  make(chan rtmpServerAPIConnsGetRes),
+	}
+
+	select {
+	case s.chAPIConnsGet <- req:
+		res := <-req.res
+		return res.data, res.err
+
+	case <-s.ctx.Done():
+		return nil, fmt.Errorf("terminated")
 	}
 }
 
 // apiConnsKick is called by api.
-func (s *rtmpServer) apiConnsKick(id string) rtmpServerAPIConnsKickRes {
+func (s *rtmpServer) apiConnsKick(uuid uuid.UUID) error {
 	req := rtmpServerAPIConnsKickReq{
-		id:  id,
-		res: make(chan rtmpServerAPIConnsKickRes),
+		uuid: uuid,
+		res:  make(chan rtmpServerAPIConnsKickRes),
 	}
 
 	select {
 	case s.chAPIConnsKick <- req:
-		return <-req.res
+		res := <-req.res
+		return res.err
 
 	case <-s.ctx.Done():
-		return rtmpServerAPIConnsKickRes{err: fmt.Errorf("terminated")}
+		return fmt.Errorf("terminated")
 	}
 }

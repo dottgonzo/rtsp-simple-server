@@ -1,7 +1,6 @@
 package core
 
 import (
-	"errors"
 	"fmt"
 	"net"
 	"time"
@@ -10,12 +9,11 @@ import (
 	"github.com/bluenviron/gortsplib/v3/pkg/auth"
 	"github.com/bluenviron/gortsplib/v3/pkg/base"
 	"github.com/bluenviron/gortsplib/v3/pkg/headers"
-	"github.com/bluenviron/gortsplib/v3/pkg/url"
 	"github.com/google/uuid"
 
-	"github.com/aler9/mediamtx/internal/conf"
-	"github.com/aler9/mediamtx/internal/externalcmd"
-	"github.com/aler9/mediamtx/internal/logger"
+	"github.com/bluenviron/mediamtx/internal/conf"
+	"github.com/bluenviron/mediamtx/internal/externalcmd"
+	"github.com/bluenviron/mediamtx/internal/logger"
 )
 
 const (
@@ -27,28 +25,24 @@ type rtspConnParent interface {
 }
 
 type rtspConn struct {
-	externalAuthenticationURL string
-	rtspAddress               string
-	authMethods               []headers.AuthMethod
-	readTimeout               conf.StringDuration
-	runOnConnect              string
-	runOnConnectRestart       bool
-	externalCmdPool           *externalcmd.Pool
-	pathManager               *pathManager
-	conn                      *gortsplib.ServerConn
-	parent                    rtspConnParent
+	rtspAddress         string
+	authMethods         []headers.AuthMethod
+	readTimeout         conf.StringDuration
+	runOnConnect        string
+	runOnConnectRestart bool
+	externalCmdPool     *externalcmd.Pool
+	pathManager         *pathManager
+	conn                *gortsplib.ServerConn
+	parent              rtspConnParent
 
-	uuid          uuid.UUID
-	created       time.Time
-	onConnectCmd  *externalcmd.Cmd
-	authUser      string
-	authPass      string
-	authValidator *auth.Validator
-	authFailures  int
+	uuid         uuid.UUID
+	created      time.Time
+	onConnectCmd *externalcmd.Cmd
+	authNonce    string
+	authFailures int
 }
 
 func newRTSPConn(
-	externalAuthenticationURL string,
 	rtspAddress string,
 	authMethods []headers.AuthMethod,
 	readTimeout conf.StringDuration,
@@ -60,18 +54,17 @@ func newRTSPConn(
 	parent rtspConnParent,
 ) *rtspConn {
 	c := &rtspConn{
-		externalAuthenticationURL: externalAuthenticationURL,
-		rtspAddress:               rtspAddress,
-		authMethods:               authMethods,
-		readTimeout:               readTimeout,
-		runOnConnect:              runOnConnect,
-		runOnConnectRestart:       runOnConnectRestart,
-		externalCmdPool:           externalCmdPool,
-		pathManager:               pathManager,
-		conn:                      conn,
-		parent:                    parent,
-		uuid:                      uuid.New(),
-		created:                   time.Now(),
+		rtspAddress:         rtspAddress,
+		authMethods:         authMethods,
+		readTimeout:         readTimeout,
+		runOnConnect:        runOnConnect,
+		runOnConnectRestart: runOnConnectRestart,
+		externalCmdPool:     externalCmdPool,
+		pathManager:         pathManager,
+		conn:                conn,
+		parent:              parent,
+		uuid:                uuid.New(),
+		created:             time.Now(),
 	}
 
 	c.Log(logger.Info, "opened")
@@ -87,8 +80,8 @@ func newRTSPConn(
 				"RTSP_PATH": "",
 				"RTSP_PORT": port,
 			},
-			func(co int) {
-				c.Log(logger.Info, "runOnInit command exited with code %d", co)
+			func(err error) {
+				c.Log(logger.Info, "runOnInit command exited: %v", err)
 			})
 	}
 
@@ -110,127 +103,6 @@ func (c *rtspConn) remoteAddr() net.Addr {
 
 func (c *rtspConn) ip() net.IP {
 	return c.conn.NetConn().RemoteAddr().(*net.TCPAddr).IP
-}
-
-func (c *rtspConn) authenticate(
-	path string,
-	query string,
-	pathIPs []fmt.Stringer,
-	pathUser conf.Credential,
-	pathPass conf.Credential,
-	isPublishing bool,
-	req *base.Request,
-	baseURL *url.URL,
-) error {
-	if c.externalAuthenticationURL != "" {
-		username := ""
-		password := ""
-
-		var auth headers.Authorization
-		err := auth.Unmarshal(req.Header["Authorization"])
-		if err == nil && auth.Method == headers.AuthBasic {
-			username = auth.BasicUser
-			password = auth.BasicPass
-		}
-
-		err = externalAuth(
-			c.externalAuthenticationURL,
-			c.ip().String(),
-			username,
-			password,
-			path,
-			externalAuthProtoRTSP,
-			&c.uuid,
-			isPublishing,
-			query)
-		if err != nil {
-			c.authFailures++
-
-			// VLC with login prompt sends 4 requests:
-			// 1) without credentials
-			// 2) with password but without username
-			// 3) without credentials
-			// 4) with password and username
-			// therefore we must allow up to 3 failures
-			if c.authFailures > 3 {
-				return pathErrAuthCritical{
-					message: "unauthorized: " + err.Error(),
-					response: &base.Response{
-						StatusCode: base.StatusUnauthorized,
-					},
-				}
-			}
-
-			v := "IPCAM"
-			return pathErrAuthNotCritical{
-				message: "unauthorized: " + err.Error(),
-				response: &base.Response{
-					StatusCode: base.StatusUnauthorized,
-					Header: base.Header{
-						"WWW-Authenticate": headers.Authenticate{
-							Method: headers.AuthBasic,
-							Realm:  &v,
-						}.Marshal(),
-					},
-				},
-			}
-		}
-	}
-
-	if pathIPs != nil {
-		ip := c.ip()
-		if !ipEqualOrInRange(ip, pathIPs) {
-			return pathErrAuthCritical{
-				message: fmt.Sprintf("IP '%s' not allowed", ip),
-				response: &base.Response{
-					StatusCode: base.StatusUnauthorized,
-				},
-			}
-		}
-	}
-
-	if pathUser != "" {
-		// reset authValidator every time the credentials change
-		if c.authValidator == nil || c.authUser != string(pathUser) || c.authPass != string(pathPass) {
-			c.authUser = string(pathUser)
-			c.authPass = string(pathPass)
-			c.authValidator = auth.NewValidator(string(pathUser), string(pathPass), c.authMethods)
-		}
-
-		err := c.authValidator.ValidateRequest(req, baseURL)
-		if err != nil {
-			c.authFailures++
-
-			// VLC with login prompt sends 4 requests:
-			// 1) without credentials
-			// 2) with password but without username
-			// 3) without credentials
-			// 4) with password and username
-			// therefore we must allow up to 3 failures
-			if c.authFailures > 3 {
-				return pathErrAuthCritical{
-					message: "unauthorized: " + err.Error(),
-					response: &base.Response{
-						StatusCode: base.StatusUnauthorized,
-					},
-				}
-			}
-
-			return pathErrAuthNotCritical{
-				response: &base.Response{
-					StatusCode: base.StatusUnauthorized,
-					Header: base.Header{
-						"WWW-Authenticate": c.authValidator.Header(),
-					},
-				},
-			}
-		}
-
-		// login successful, reset authFailures
-		c.authFailures = 0
-	}
-
-	return nil
 }
 
 // onClose is called by rtspServer.
@@ -263,29 +135,28 @@ func (c *rtspConn) onDescribe(ctx *gortsplib.ServerHandlerOnDescribeCtx,
 	}
 	ctx.Path = ctx.Path[1:]
 
+	if c.authNonce == "" {
+		c.authNonce = auth.GenerateNonce()
+	}
+
 	res := c.pathManager.describe(pathDescribeReq{
 		pathName: ctx.Path,
 		url:      ctx.Request.URL,
-		authenticate: func(
-			pathIPs []fmt.Stringer,
-			pathUser conf.Credential,
-			pathPass conf.Credential,
-		) error {
-			return c.authenticate(ctx.Path, ctx.Query, pathIPs, pathUser, pathPass, false, ctx.Request, nil)
+		credentials: authCredentials{
+			query:       ctx.Query,
+			ip:          c.ip(),
+			proto:       authProtocolRTSP,
+			id:          &c.uuid,
+			rtspRequest: ctx.Request,
+			rtspNonce:   c.authNonce,
 		},
 	})
 
 	if res.err != nil {
 		switch terr := res.err.(type) {
-		case pathErrAuthNotCritical:
-			c.Log(logger.Debug, "non-critical authentication error: %s", terr.message)
-			return terr.response, nil, nil
-
-		case pathErrAuthCritical:
-			// wait some seconds to stop brute force attacks
-			<-time.After(rtspConnPauseAfterAuthError)
-
-			return terr.response, nil, errors.New(terr.message)
+		case pathErrAuth:
+			res, err := c.handleAuthError(terr.wrapped)
+			return res, nil, err
 
 		case pathErrNoOnePublishing:
 			return &base.Response{
@@ -311,4 +182,40 @@ func (c *rtspConn) onDescribe(ctx *gortsplib.ServerHandlerOnDescribeCtx,
 	return &base.Response{
 		StatusCode: base.StatusOK,
 	}, res.stream.rtspStream, nil
+}
+
+func (c *rtspConn) handleAuthError(authErr error) (*base.Response, error) {
+	c.authFailures++
+
+	// VLC with login prompt sends 4 requests:
+	// 1) without credentials
+	// 2) with password but without username
+	// 3) without credentials
+	// 4) with password and username
+	// therefore we must allow up to 3 failures
+	if c.authFailures <= 3 {
+		return &base.Response{
+			StatusCode: base.StatusUnauthorized,
+			Header: base.Header{
+				"WWW-Authenticate": auth.GenerateWWWAuthenticate(c.authMethods, "IPCAM", c.authNonce),
+			},
+		}, nil
+	}
+
+	// wait some seconds to stop brute force attacks
+	<-time.After(rtspConnPauseAfterAuthError)
+
+	return &base.Response{
+		StatusCode: base.StatusUnauthorized,
+	}, authErr
+}
+
+func (c *rtspConn) apiItem() *apiRTSPConn {
+	return &apiRTSPConn{
+		ID:            c.uuid,
+		Created:       c.created,
+		RemoteAddr:    c.remoteAddr().String(),
+		BytesReceived: c.conn.BytesReceived(),
+		BytesSent:     c.conn.BytesSent(),
+	}
 }

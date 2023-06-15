@@ -4,16 +4,17 @@
 
 <br>
 
-[_MediaMTX_](#important-announcement) / _rtsp-simple-server_ is a ready-to-use and zero-dependency server and proxy that allows users to publish, read and proxy live video and audio streams.
+_MediaMTX_ / [_rtsp-simple-server_](#note-about-rtsp-simple-server) is a ready-to-use and zero-dependency server and proxy that allows users to publish, read and proxy live video and audio streams.
 
 Live streams can be published to the server with:
 
 |protocol|variants|video codecs|audio codecs|
 |--------|--------|------------|------------|
-|RTSP clients (FFmpeg, GStreamer)|UDP, TCP, RTSPS|AV1, VP9, VP8, H265, H264, MPEG-4 Video (H263, Xvid), MPEG-2 Video, M-JPEG and any RTP-compatible codec|Opus,  MPEG-4 Audio (AAC), MPEG-2 Audio (MP3), G722, G711, LPCM and any RTP-compatible codec|
-|RTSP servers and cameras|UDP, UDP-Multicast, TCP, RTSPS|AV1, VP9, VP8, H265, H264, MPEG-4 Video (H263, Xvid), MPEG-2 Video, M-JPEG and any RTP-compatible codec|Opus,  MPEG-4 Audio (AAC), MPEG-2 Audio (MP3), G722, G711, LPCM and any RTP-compatible codec|
-|RTMP clients (OBS Studio)|RTMP, RTMPS, Enhanced RTMP|AV1, H265, H264|MPEG-4 Audio (AAC), MPEG-2 Audio (MP3)|
-|RTMP servers and cameras|RTMP, RTMPS, Enhanced RTMP|H264|MPEG-4 Audio (AAC), MPEG-2 Audio (MP3)|
+|WebRTC|Browser-based, WHIP|AV1, VP9, VP8, H264|Opus, G722, G711|
+|RTSP clients|UDP, TCP, RTSPS|AV1, VP9, VP8, H265, H264, MPEG-4 Video (H263, Xvid), MPEG-1/2 Video, M-JPEG and any RTP-compatible codec|Opus, MPEG-4 Audio (AAC), MPEG-1/2 Audio (MP3), G722, G711, LPCM and any RTP-compatible codec|
+|RTSP servers and cameras|UDP, UDP-Multicast, TCP, RTSPS|AV1, VP9, VP8, H265, H264, MPEG-4 Video (H263, Xvid), MPEG-1/2 Video, M-JPEG and any RTP-compatible codec|Opus, MPEG-4 Audio (AAC), MPEG-1/2 Audio (MP3), G722, G711, LPCM and any RTP-compatible codec|
+|RTMP clients (OBS Studio)|RTMP, RTMPS, Enhanced RTMP|AV1, H265, H264|MPEG-4 Audio (AAC), MPEG-1/2 Audio (MP3)|
+|RTMP servers and cameras|RTMP, RTMPS, Enhanced RTMP|H264|MPEG-4 Audio (AAC), MPEG-1/2 Audio (MP3)|
 |HLS servers and cameras|Low-Latency HLS, MP4-based HLS, legacy HLS|H265, H264|Opus, MPEG-4 Audio (AAC)|
 |UDP/MPEG-TS streams|Unicast, broadcast, multicast|H265, H264|Opus, MPEG-4 Audio (AAC)|
 |Raspberry Pi Cameras||H264||
@@ -22,10 +23,10 @@ And can be read from the server with:
 
 |protocol|variants|video codecs|audio codecs|
 |--------|--------|------------|------------|
-|RTSP|UDP, UDP-Multicast, TCP, RTSPS|AV1, VP9, VP8, H265, H264, MPEG-4 Video (H263, Xvid), MPEG-2 Video, M-JPEG and any RTP-compatible codec|Opus,  MPEG-4 Audio (AAC), MPEG-2 Audio (MP3), G722, G711, LPCM and any RTP-compatible codec|
-|RTMP|RTMP, RTMPS, Enhanced RTMP|H264|MPEG-4 Audio (AAC), MPEG-2 Audio (MP3)|
+|WebRTC|Browser-based, WHEP|AV1, VP9, VP8, H264|Opus, G722, G711|
+|RTSP|UDP, UDP-Multicast, TCP, RTSPS|AV1, VP9, VP8, H265, H264, MPEG-4 Video (H263, Xvid), MPEG-1/2 Video, M-JPEG and any RTP-compatible codec|Opus, MPEG-4 Audio (AAC), MPEG-1/2 Audio (MP3), G722, G711, LPCM and any RTP-compatible codec|
+|RTMP|RTMP, RTMPS, Enhanced RTMP|H264|MPEG-4 Audio (AAC), MPEG-1/2 Audio (MP3)|
 |HLS|Low-Latency HLS, MP4-based HLS, legacy HLS|H265, H264|Opus, MPEG-4 Audio (AAC)|
-|WebRTC||AV1, VP9, VP8, H264|Opus, G722, G711|
 
 Features:
 
@@ -40,30 +41,25 @@ Features:
 * Reload the configuration without disconnecting existing clients (hot reloading)
 * Read Prometheus-compatible metrics
 * Run external commands when clients connect, disconnect, read or publish streams
-* Natively compatible with the Raspberry Pi Camera
 * Compatible with Linux, Windows and macOS, does not require any dependency or interpreter, it's a single executable
 
-[![Test](https://github.com/aler9/mediamtx/workflows/test/badge.svg)](https://github.com/aler9/mediamtx/actions?query=workflow:test)
-[![Lint](https://github.com/aler9/mediamtx/workflows/lint/badge.svg)](https://github.com/aler9/mediamtx/actions?query=workflow:lint)
-[![CodeCov](https://codecov.io/gh/aler9/mediamtx/branch/main/graph/badge.svg)](https://app.codecov.io/gh/aler9/mediamtx/branch/main)
-[![Release](https://img.shields.io/github/v/release/aler9/mediamtx)](https://github.com/aler9/mediamtx/releases)
-[![Docker Hub](https://img.shields.io/badge/docker-aler9/rtsp--simple--server-blue)](https://hub.docker.com/r/aler9/rtsp-simple-server)
-[![API Documentation](https://img.shields.io/badge/api-documentation-blue)](https://aler9.github.io/mediamtx)
+[![Test](https://github.com/bluenviron/mediamtx/workflows/test/badge.svg)](https://github.com/bluenviron/mediamtx/actions?query=workflow:test)
+[![Lint](https://github.com/bluenviron/mediamtx/workflows/lint/badge.svg)](https://github.com/bluenviron/mediamtx/actions?query=workflow:lint)
+[![CodeCov](https://codecov.io/gh/bluenviron/mediamtx/branch/main/graph/badge.svg)](https://app.codecov.io/gh/bluenviron/mediamtx/branch/main)
+[![Release](https://img.shields.io/github/v/release/bluenviron/mediamtx)](https://github.com/bluenviron/mediamtx/releases)
+[![Docker Hub](https://img.shields.io/badge/docker-bluenviron/mediamtx-blue)](https://hub.docker.com/r/bluenviron/mediamtx)
+[![API Documentation](https://img.shields.io/badge/api-documentation-blue)](https://bluenviron.github.io/mediamtx)
 
-## Important announcement
+## Note about rtsp-simple-server
 
-_rtsp-simple-server_ is being rebranded as _MediaMTX_. The reason is pretty obvious: this project started as a RTSP server but has evolved into a much more versatile media server (i like to call it a "media broker", a message broker for media streams), that is not tied to the RTSP protocol anymore. Nothing will change regarding license, features and backward compatibility.
-
-Furthermore, my main open source projects are being transferred to the [bluenviron organization](https://github.com/bluenviron), in order to allow the community to maintain and evolve the code regardless of my personal availability.
-
-In the next months, the repository name and the Docker image name will be changed accordingly.
+_rtsp-simple-server_ has been rebranded as _MediaMTX_. The reason is pretty obvious: this project started as a RTSP server but has evolved into a much more versatile media server (i like to call it a "media broker", a message broker for media streams), that is not tied to the RTSP protocol anymore. Nothing will change regarding license, features and backward compatibility.
 
 ## Table of contents
 
 * [Installation](#installation)
-  * [Standard](#standard)
-  * [Docker](#docker)
-  * [OpenWRT](#openwrt)
+  * [Standalone binary](#standalone-binary)
+  * [Docker image](#docker-image)
+  * [OpenWRT package](#openwrt-package)
 * [Basic usage](#basic-usage)
 * [General](#general)
   * [Configuration](#configuration)
@@ -86,6 +82,7 @@ In the next months, the repository name and the Docker image name will be change
   * [From OBS Studio](#from-obs-studio)
   * [From OpenCV](#from-opencv)
   * [From a UDP stream](#from-a-udp-stream)
+  * [From the browser](#from-the-browser)
 * [Read from the server](#read-from-the-server)
   * [From VLC and Ubuntu](#from-vlc-and-ubuntu)
 * [RTSP protocol](#rtsp-protocol)
@@ -116,9 +113,11 @@ In the next months, the repository name and the Docker image name will be change
 
 ## Installation
 
-### Standard
+There are several installation methods available: standalone binary, Docker image and OpenWRT package.
 
-1. Download and extract a precompiled binary from the [release page](https://github.com/aler9/mediamtx/releases).
+### Standalone binary
+
+1. Download and extract a standalone binary from the [release page](https://github.com/bluenviron/mediamtx/releases).
 
 2. Start the server:
 
@@ -126,23 +125,36 @@ In the next months, the repository name and the Docker image name will be change
    ./mediamtx
    ```
 
-### Docker
+### Docker image
 
 Download and launch the image:
 
 ```
-docker run --rm -it --network=host aler9/rtsp-simple-server
+docker run --rm -it --network=host bluenviron/mediamtx:latest
 ```
 
-The `--network=host` flag is mandatory since Docker can change the source port of UDP packets for routing reasons, and this doesn't allow the server to find out the author of the packets. This issue can be avoided by disabling the UDP transport protocol:
+Available images:
+
+|name|FFmpeg included|RPI Camera support|
+|----|---------------|------------------|
+|bluenviron/mediamtx:latest|:x:|:x:|
+|bluenviron/mediamtx:latest-ffmpeg|:heavy_check_mark:|:x:|
+|bluenviron/mediamtx:latest-rpi|:x:|:heavy_check_mark:|
+|bluenviron/mediamtx:latest-ffmpeg-rpi|:heavy_check_mark:|:heavy_check_mark:
+
+The `--network=host` flag is mandatory since Docker can change the source port of UDP packets for routing reasons, and this doesn't allow the RTSP server to identify the senders of the packets. This issue can be avoided by disabling the UDP transport protocol:
 
 ```
-docker run --rm -it -e MTX_PROTOCOLS=tcp -p 8554:8554 -p 1935:1935 -p 8888:8888 -p 8889:8889 aler9/rtsp-simple-server
+docker run --rm -it \
+-e MTX_PROTOCOLS=tcp \
+-p 8554:8554 \
+-p 1935:1935 \
+-p 8888:8888 \
+-p 8889:8889 \
+bluenviron/mediamtx
 ```
 
-Please keep in mind that the Docker image doesn't include _FFmpeg_. if you need to use _FFmpeg_ for an external command or anything else, you need to build a Docker image that contains both _rtsp-simple-server_ and _FFmpeg_, by following instructions [here](https://github.com/aler9/mediamtx/discussions/278#discussioncomment-549104).
-
-### OpenWRT
+### OpenWRT package
 
 1. In a x86 Linux system, download the OpenWRT SDK corresponding to the wanted OpenWRT version and target from the [OpenWRT website](https://downloads.openwrt.org/releases/) and extract it.
 
@@ -158,8 +170,8 @@ Please keep in mind that the Docker image doesn't include _FFmpeg_. if you need 
 
    ```
    mkdir package/mediamtx
-   wget -O package/mediamtx/Makefile https://raw.githubusercontent.com/aler9/mediamtx/main/openwrt.mk
-   sed -i "s/v0.0.0/$(git ls-remote --tags --sort=v:refname https://github.com/aler9/mediamtx | tail -n1 | sed 's/.*\///; s/\^{}//')/" package/mediamtx/Makefile
+   wget -O package/mediamtx/Makefile https://raw.githubusercontent.com/bluenviron/mediamtx/main/openwrt.mk
+   sed -i "s/v0.0.0/$(git ls-remote --tags --sort=v:refname https://github.com/bluenviron/mediamtx | tail -n1 | sed 's/.*\///; s/\^{}//')/" package/mediamtx/Makefile
    ```
 
 4. Compile the server:
@@ -222,7 +234,7 @@ There are 3 ways to change the configuration:
    * available in the root folder of the Docker image (`/mediamtx.yml`); it can be overridden in this way:
 
      ```
-     docker run --rm -it --network=host -v $PWD/mediamtx.yml:/mediamtx.yml aler9/rtsp-simple-server
+     docker run --rm -it --network=host -v $PWD/mediamtx.yml:/mediamtx.yml bluenviron/mediamtx
      ```
 
    The configuration can be changed dynamically when the server is running (hot reloading) by writing to the configuration file. Changes are detected and applied without disconnecting existing clients, whenever it's possible.
@@ -247,7 +259,7 @@ There are 3 ways to change the configuration:
    This method is particularly useful when using Docker; any configuration parameter can be changed by passing environment variables with the `-e` flag:
 
    ```
-   docker run --rm -it --network=host -e MTX_PATHS_TEST_SOURCE=rtsp://myurl aler9/rtsp-simple-server
+   docker run --rm -it --network=host -e MTX_PATHS_TEST_SOURCE=rtsp://myurl bluenviron/mediamtx
    ```
 
 3. By using the [HTTP API](#http-api).
@@ -330,7 +342,7 @@ Please be aware that it's perfectly normal for the authentication server to rece
 }
 ```
 
-This happens because a RTSP client doesn't provide credentials until it is asked to. In order to receive the credentials, the authentication server must reply with status code `401` - the client will then send credentials.
+This happens because a RTSP client doesn't provide credentials until it is asked to. In order to receive the credentials, the authentication server must reply with status code `401`, then the client will send credentials.
 
 ### Encrypt the configuration
 
@@ -432,7 +444,7 @@ The command inserted into `runOnDemand` will start only when a client requests t
 
 Systemd is the service manager used by Ubuntu, Debian and many other Linux distributions, and allows to launch _MediaMTX_ on boot.
 
-Download a release bundle from the [release page](https://github.com/aler9/mediamtx/releases), unzip it, and move the executable and configuration in the system:
+Download a release bundle from the [release page](https://github.com/bluenviron/mediamtx/releases), unzip it, and move the executable and configuration in the system:
 
 ```
 sudo mv mediamtx /usr/local/bin/
@@ -494,10 +506,10 @@ api: yes
 The API listens on `apiAddress`, that by default is `127.0.0.1:9997`; for instance, to obtain a list of active paths, run:
 
 ```
-curl http://127.0.0.1:9997/v1/paths/list
+curl http://127.0.0.1:9997/v2/paths/list
 ```
 
-Full documentation of the API is available on the [dedicated site](https://aler9.github.io/mediamtx/).
+Full documentation of the API is available on the [dedicated site](https://bluenviron.github.io/mediamtx/).
 
 ### Metrics
 
@@ -543,10 +555,10 @@ rtmp_conns{id="[id]",state="[state]"} 1
 rtmp_conns_bytes_received{id="[id]",state="[state]"} 1234
 rtmp_conns_bytes_sent{id="[id]",state="[state]"} 187
 
-# metrics of every WebRTC connection
-webrtc_conns{id="[id]"} 1
-webrtc_conns_bytes_received{id="[id]",state="[state]"} 1234
-webrtc_conns_bytes_sent{id="[id]",state="[state]"} 187
+# metrics of every WebRTC session
+webrtc_sessions{id="[id]"} 1
+webrtc_sessions_bytes_received{id="[id]",state="[state]"} 1234
+webrtc_sessions_bytes_sent{id="[id]",state="[state]"} 187
 ```
 
 ### pprof
@@ -666,7 +678,7 @@ docker run --rm -it \
 --tmpfs /dev/shm:exec \
 -v /run/udev:/run/udev:ro \
 -e MTX_PATHS_CAM_SOURCE=rpiCamera \
-aler9/rtsp-simple-server:latest-rpi
+bluenviron/mediamtx:latest-rpi
 ```
 
 After starting the server, the camera can be reached on `rtsp://raspberry-pi:8554/cam` or `http://raspberry-pi:8888/cam`.
@@ -799,6 +811,14 @@ paths:
 ```
 
 After starting the server, the stream can be reached on `rtsp://localhost:8554/udp`.
+
+### From the browser
+
+Open the page into the browser:
+
+```
+http://localhost:8889/mystream/publish
+```
 
 ## Read from the server
 
@@ -1150,7 +1170,7 @@ The NAT / container must then be configured in order to route all incoming UDP p
 docker run --rm -it \
 -p 8189:8189/udp
 ....
-aler9/rtsp-simple-server
+bluenviron/mediamtx
 ```
 
 If the UDP protocol is blocked by a firewall, all WebRTC/ICE connections can be forced to pass through a single TCP server port:
@@ -1168,7 +1188,7 @@ The  NAT / container must then be configured in order to redirect all incoming T
 docker run --rm -it \
 -p 8189:8189
 ....
-aler9/rtsp-simple-server
+bluenviron/mediamtx
 ```
 
 Finally, if none of these methods work, you can force all WebRTC/ICE connections to pass through a TURN server, like [coturn](https://github.com/coturn/coturn), that must be configured externally. The server address and credentials must be set in the configuration file:
@@ -1195,16 +1215,30 @@ The simples way to embed a WebRTC stream into a web page consists in using an if
 <iframe src="http://mediamtx-ip:8889/mystream" scrolling="no"></iframe>
 ```
 
-For more advanced options, you can create and serve a custom web page by starting from the [source code of the default page](internal/core/webrtc_index.html).
+For more advanced options, you can create and serve a custom web page by starting from the [source code of the default read page](internal/core/webrtc_read_index.html) and [source code of the publish page](internal/core/webrtc_publish_index.html).
 
 ## Standards
 
-* [RTSP/RTP/RTCP standards](https://github.com/bluenviron/gortsplib#standards)
-* [HLS standards](https://github.com/bluenviron/gohlslib#standards)
-* [Codec standards](https://github.com/bluenviron/mediacommon#standards)
-* [RTMP](https://rtmp.veriskope.com/pdf/rtmp_specification_1.0.pdf)
-* [Enhanced RTMP](https://raw.githubusercontent.com/veovera/enhanced-rtmp/main/enhanced-rtmp-v1.pdf)
-* [Golang project layout](https://github.com/golang-standards/project-layout)
+* RTSP
+  * [RTSP/RTP/RTCP standards](https://github.com/bluenviron/gortsplib#standards)
+
+* HLS
+  * [HLS standards](https://github.com/bluenviron/gohlslib#standards)
+
+* RTMP
+  * [RTMP](https://rtmp.veriskope.com/pdf/rtmp_specification_1.0.pdf)
+  * [Enhanced RTMP](https://raw.githubusercontent.com/veovera/enhanced-rtmp/main/enhanced-rtmp-v1.pdf)
+
+* WebRTC
+  * [WebRTC: Real-Time Communication in Browsers](https://www.w3.org/TR/webrtc/)
+  * [WebRTC HTTP Ingestion Protocol (WHIP)](https://datatracker.ietf.org/doc/draft-ietf-wish-whip/)
+  * [WebRTC HTTP Egress Protocol (WHEP)](https://datatracker.ietf.org/doc/draft-murillo-whep/)
+
+* Video and audio codecs
+  * [Codec standards](https://github.com/bluenviron/mediacommon#standards)
+
+* Other
+  * [Golang project layout](https://github.com/golang-standards/project-layout)
 
 ## Links
 
@@ -1212,10 +1246,10 @@ Related projects
 
 * [gortsplib (RTSP library used internally)](https://github.com/bluenviron/gortsplib)
 * [gohlslib (HLS library used internally)](https://github.com/bluenviron/gohlslib)
+* [pion/webrtc (WebRTC library used internally)](https://github.com/pion/webrtc)
 * [pion/sdp (SDP library used internally)](https://github.com/pion/sdp)
 * [pion/rtp (RTP library used internally)](https://github.com/pion/rtp)
 * [pion/rtcp (RTCP library used internally)](https://github.com/pion/rtcp)
-* [pion/webrtc (WebRTC library used internally)](https://github.com/pion/webrtc)
 * [notedit/rtmp (RTMP library used internally)](https://github.com/notedit/rtmp)
 * [go-astits (MPEG-TS library used internally)](https://github.com/asticode/go-astits)
 * [go-mp4 (MP4 library used internally)](https://github.com/abema/go-mp4)

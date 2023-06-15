@@ -5,8 +5,9 @@ import (
 	"time"
 
 	"github.com/bluenviron/gortsplib/v3/pkg/formats"
+	"github.com/pion/rtp"
 
-	"github.com/aler9/mediamtx/internal/logger"
+	"github.com/bluenviron/mediamtx/internal/logger"
 )
 
 const (
@@ -17,6 +18,9 @@ const (
 type Processor interface {
 	// cleans and normalizes a data unit.
 	Process(Unit, bool) error
+
+	// wraps a RTP packet into a Unit.
+	UnitForRTPPacket(pkt *rtp.Packet, ntp time.Time) Unit
 }
 
 // New allocates a Processor.
@@ -45,8 +49,11 @@ func New(
 	case *formats.MPEG2Audio:
 		return newMPEG2Audio(udpMaxPayloadSize, forma, generateRTPPackets, log)
 
-	case *formats.MPEG4Audio:
-		return newMPEG4Audio(udpMaxPayloadSize, forma, generateRTPPackets, log)
+	case *formats.MPEG4AudioGeneric:
+		return newMPEG4AudioGeneric(udpMaxPayloadSize, forma, generateRTPPackets, log)
+
+	case *formats.MPEG4AudioLATM:
+		return newMPEG4AudioLATM(udpMaxPayloadSize, forma, generateRTPPackets, log)
 
 	case *formats.Opus:
 		return newOpus(udpMaxPayloadSize, forma, generateRTPPackets, log)

@@ -8,7 +8,7 @@ import (
 	"github.com/bluenviron/gortsplib/v3/pkg/formats/rtpsimpleaudio"
 	"github.com/pion/rtp"
 
-	"github.com/aler9/mediamtx/internal/logger"
+	"github.com/bluenviron/mediamtx/internal/logger"
 )
 
 // UnitOpus is a Opus data unit.
@@ -40,7 +40,7 @@ func newOpus(
 	udpMaxPayloadSize int,
 	forma *formats.Opus,
 	generateRTPPackets bool,
-	log logger.Writer,
+	_ logger.Writer,
 ) (*formatProcessorOpus, error) {
 	t := &formatProcessorOpus{
 		udpMaxPayloadSize: udpMaxPayloadSize,
@@ -48,15 +48,22 @@ func newOpus(
 	}
 
 	if generateRTPPackets {
-		t.encoder = &rtpsimpleaudio.Encoder{
-			PayloadMaxSize: t.udpMaxPayloadSize - 12,
-			PayloadType:    forma.PayloadTyp,
-			SampleRate:     48000,
+		err := t.createEncoder()
+		if err != nil {
+			return nil, err
 		}
-		t.encoder.Init()
 	}
 
 	return t, nil
+}
+
+func (t *formatProcessorOpus) createEncoder() error {
+	t.encoder = &rtpsimpleaudio.Encoder{
+		PayloadMaxSize: t.udpMaxPayloadSize - 12,
+		PayloadType:    t.format.PayloadTyp,
+		SampleRate:     48000,
+	}
+	return t.encoder.Init()
 }
 
 func (t *formatProcessorOpus) Process(unit Unit, hasNonRTSPReaders bool) error { //nolint:dupl
@@ -75,9 +82,13 @@ func (t *formatProcessorOpus) Process(unit Unit, hasNonRTSPReaders bool) error {
 		}
 
 		// decode from RTP
-		if hasNonRTSPReaders {
+		if hasNonRTSPReaders || t.decoder != nil {
 			if t.decoder == nil {
-				t.decoder = t.format.CreateDecoder()
+				var err error
+				t.decoder, err = t.format.CreateDecoder2()
+				if err != nil {
+					return err
+				}
 			}
 
 			frame, pts, err := t.decoder.Decode(pkt)
@@ -101,4 +112,11 @@ func (t *formatProcessorOpus) Process(unit Unit, hasNonRTSPReaders bool) error {
 	tunit.RTPPackets = []*rtp.Packet{pkt}
 
 	return nil
+}
+
+func (t *formatProcessorOpus) UnitForRTPPacket(pkt *rtp.Packet, ntp time.Time) Unit {
+	return &UnitOpus{
+		RTPPackets: []*rtp.Packet{pkt},
+		NTP:        ntp,
+	}
 }

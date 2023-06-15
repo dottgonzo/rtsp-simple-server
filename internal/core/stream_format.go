@@ -3,12 +3,14 @@ package core
 import (
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/bluenviron/gortsplib/v3/pkg/formats"
 	"github.com/bluenviron/gortsplib/v3/pkg/media"
+	"github.com/pion/rtp"
 
-	"github.com/aler9/mediamtx/internal/formatprocessor"
-	"github.com/aler9/mediamtx/internal/logger"
+	"github.com/bluenviron/mediamtx/internal/formatprocessor"
+	"github.com/bluenviron/mediamtx/internal/logger"
 )
 
 type streamFormat struct {
@@ -72,4 +74,8 @@ func (sf *streamFormat) writeUnit(s *stream, medi *media.Media, data formatproce
 	for _, cb := range sf.nonRTSPReaders {
 		cb(data)
 	}
+}
+
+func (sf *streamFormat) writeRTPPacket(s *stream, medi *media.Media, pkt *rtp.Packet, ntp time.Time) {
+	sf.writeUnit(s, medi, sf.proc.UnitForRTPPacket(pkt, ntp))
 }

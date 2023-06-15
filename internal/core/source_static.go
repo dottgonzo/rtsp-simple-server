@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aler9/mediamtx/internal/conf"
-	"github.com/aler9/mediamtx/internal/logger"
+	"github.com/bluenviron/mediamtx/internal/conf"
+	"github.com/bluenviron/mediamtx/internal/logger"
 )
 
 const (
@@ -17,7 +17,7 @@ const (
 type sourceStaticImpl interface {
 	logger.Writer
 	run(context.Context, *conf.PathConf, chan *conf.PathConf) error
-	apiSourceDescribe() interface{}
+	apiSourceDescribe() pathAPISourceOrReader
 }
 
 type sourceStaticParent interface {
@@ -201,7 +201,7 @@ func (s *sourceStatic) reloadConf(newConf *conf.PathConf) {
 }
 
 // apiSourceDescribe implements source.
-func (s *sourceStatic) apiSourceDescribe() interface{} {
+func (s *sourceStatic) apiSourceDescribe() pathAPISourceOrReader {
 	return s.impl.apiSourceDescribe()
 }
 

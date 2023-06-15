@@ -14,10 +14,10 @@ import (
 	"github.com/bluenviron/gortsplib/v3/pkg/formats"
 	"github.com/bluenviron/gortsplib/v3/pkg/media"
 
-	"github.com/aler9/mediamtx/internal/conf"
-	"github.com/aler9/mediamtx/internal/logger"
-	"github.com/aler9/mediamtx/internal/rtmp"
-	"github.com/aler9/mediamtx/internal/rtmp/message"
+	"github.com/bluenviron/mediamtx/internal/conf"
+	"github.com/bluenviron/mediamtx/internal/logger"
+	"github.com/bluenviron/mediamtx/internal/rtmp"
+	"github.com/bluenviron/mediamtx/internal/rtmp/message"
 )
 
 type rtmpSourceParent interface {
@@ -148,9 +148,7 @@ func (s *rtmpSource) run(ctx context.Context, cnf *conf.PathConf, reloadConf cha
 
 			s.Log(logger.Info, "ready: %s", sourceMediaInfo(medias))
 
-			defer func() {
-				s.parent.sourceStaticImplSetNotReady(pathSourceStaticSetNotReadyReq{})
-			}()
+			defer s.parent.sourceStaticImplSetNotReady(pathSourceStaticSetNotReadyReq{})
 
 			videoWriteFunc := getRTMPWriteFunc(videoMedia, videoFormat, res.stream)
 			audioWriteFunc := getRTMPWriteFunc(audioMedia, audioFormat, res.stream)
@@ -207,8 +205,9 @@ func (s *rtmpSource) run(ctx context.Context, cnf *conf.PathConf, reloadConf cha
 }
 
 // apiSourceDescribe implements sourceStaticImpl.
-func (*rtmpSource) apiSourceDescribe() interface{} {
-	return struct {
-		Type string `json:"type"`
-	}{"rtmpSource"}
+func (*rtmpSource) apiSourceDescribe() pathAPISourceOrReader {
+	return pathAPISourceOrReader{
+		Type: "rtmpSource",
+		ID:   "",
+	}
 }

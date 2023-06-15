@@ -53,11 +53,12 @@ pprof: no
 pprofAddress: 127.0.0.1:9999
 
 # Command to run when a client connects to the server.
+# Prepend ./ to run an executable in the current folder (example: "./ffmpeg")
 # This is terminated with SIGINT when a client disconnects from the server.
 # The following environment variables are available:
 # * RTSP_PORT: server port
 runOnConnect:
-# Restart the command if it exits suddenly.
+# Restart the command if it exits.
 runOnConnectRestart: no
 
 ###############################################
@@ -96,8 +97,9 @@ multicastRTCPPort: 8003
 serverKey: server.key
 # Path to the server certificate. This is needed only when encryption is "strict" or "optional".
 serverCert: server.crt
-# Authentication methods.
-authMethods: [basic, digest]
+# Authentication methods. Available are "basic" and "digest".
+# "digest" doesn't provide any additional security and is available for compatibility reasons only.
+authMethods: [basic]
 
 ###############################################
 # RTMP parameters
@@ -198,25 +200,27 @@ webrtcAllowOrigin: '*'
 # If the server receives a request from one of these entries, IP in logs
 # will be taken from the X-Forwarded-For header.
 webrtcTrustedProxies: []
-# List of ICE servers, in format type:user:pass:host:port or type:host:port.
+# List of ICE servers, in format type:user:password:host:port or type:host:port.
 # type can be "stun", "turn" or "turns".
-# STUN servers are used to get the public IP of both server and clients.
-# TURN/TURNS servers are used as relay when a direct connection between server and clients is not possible.
+# STUN servers are used to obtain the public IP of server and clients. They are
+# needed when server and clients are on different LANs.
+# TURN servers are needed when a direct connection between server and clients
+# is not possible. All traffic is routed through the chosen TURN server.
 # if user is "AUTH_SECRET", then authentication is secret based.
-# the secret must be inserted into the pass field.
+# the secret must be inserted into the password field.
 webrtcICEServers: [stun:stun.l.google.com:19302]
 # List of public IP addresses that are to be used as a host.
 # This is used typically for servers that are behind 1:1 D-NAT.
 webrtcICEHostNAT1To1IPs: []
 # Address of a ICE UDP listener in format host:port.
-# If filled, ICE traffic will come through a single UDP port,
+# If filled, ICE traffic will pass through a single UDP port,
 # allowing the deployment of the server inside a container or behind a NAT.
 webrtcICEUDPMuxAddress:
 # Address of a ICE TCP listener in format host:port.
-# If filled, ICE traffic will come through a single TCP port,
+# If filled, ICE traffic will pass through a single TCP port,
 # allowing the deployment of the server inside a container or behind a NAT.
-# At the moment, setting this parameter forces usage of the TCP protocol,
-# which is not optimal for WebRTC.
+# Setting this parameter forces usage of the TCP protocol, which is not
+# optimal for WebRTC.
 webrtcICETCPMuxAddress:
 
 ###############################################
@@ -243,23 +247,16 @@ paths:
     # * rpiCamera -> the stream is provided by a Raspberry Pi Camera
     source: publisher
 
-    # If the source is an RTSP or RTSPS URL, this is the protocol that will be used to
-    # pull the stream. available values are "automatic", "udp", "multicast", "tcp".
-    sourceProtocol: automatic
+    ###############################################
+    # General path parameters
 
-    # Tf the source is an RTSP or RTSPS URL, this allows to support sources that
-    # don't provide server ports or use random server ports. This is a security issue
-    # and must be used only when interacting with sources that require it.
-    sourceAnyPortEnable: no
-
-    # If the source is a RTSPS, RTMPS or HTTPS URL, and the source certificate is self-signed
+    # If the source is a URL, and the source certificate is self-signed
     # or invalid, you can provide the fingerprint of the certificate in order to
     # validate it anyway. It can be obtained by running:
     # openssl s_client -connect source_ip:source_port </dev/null 2>/dev/null | sed -n '/BEGIN/,/END/p' > server.crt
     # openssl x509 -in server.crt -noout -fingerprint -sha256 | cut -d "=" -f2 | tr -d ':'
     sourceFingerprint:
-
-    # If the source is an RTSP or RTMP URL, it will be pulled only when at least
+    # If the source is a URL, it will be pulled only when at least
     # one reader is connected, saving bandwidth.
     sourceOnDemand: no
     # If sourceOnDemand is "yes", readers will be put on hold until the source is
@@ -269,19 +266,65 @@ paths:
     # readers connected and this amount of time has passed.
     sourceOnDemandCloseAfter: 10s
 
-    # If the source is "redirect", this is the RTSP URL which clients will be
-    # redirected to.
-    sourceRedirect:
+    ###############################################
+    # Authentication path parameters
 
-    # If the source is "publisher" and a client is publishing, do not allow another
-    # client to disconnect the former and publish in its place.
+    # Username required to publish.
+    # SHA256-hashed values can be inserted with the "sha256:" prefix.
+    publishUser:
+    # Password required to publish.
+    # SHA256-hashed values can be inserted with the "sha256:" prefix.
+    publishPass:
+    # IPs or networks (x.x.x.x/24) allowed to publish.
+    publishIPs: []
+
+    # Username required to read.
+    # SHA256-hashed values can be inserted with the "sha256:" prefix.
+    readUser:
+    # password required to read.
+    # SHA256-hashed values can be inserted with the "sha256:" prefix.
+    readPass:
+    # IPs or networks (x.x.x.x/24) allowed to read.
+    readIPs: []
+
+    ###############################################
+    # Publisher path parameters (when source is "publisher")
+
+    # do not allow another client to disconnect the current publisher and publish in its place.
     disablePublisherOverride: no
-
-    # If the source is "publisher" and no one is publishing, redirect readers to this
-    # path. It can be can be a relative path  (i.e. /otherstream) or an absolute RTSP URL.
+    # if no one is publishing, redirect readers to this path.
+    # It can be can be a relative path  (i.e. /otherstream) or an absolute RTSP URL.
     fallback:
 
-    # If the source is "rpiCamera", these are the Raspberry Pi Camera parameters.
+    ###############################################
+    # RTSP path parameters (when source is a RTSP or a RTSPS URL)
+
+    # protocol used to pull the stream. available values are "automatic", "udp", "multicast", "tcp".
+    sourceProtocol: automatic
+    # support sources that don't provide server ports or use random server ports. This is a security issue
+    # and must be used only when interacting with sources that require it.
+    sourceAnyPortEnable: no
+    # range header to send to the source, in order to start streaming from the specified offset.
+    # available values:
+    # * clock: Absolute time
+    # * npt: Normal Play Time
+    # * smpte: SMPTE timestamps relative to the start of the recording
+    rtspRangeType:
+    # available values:
+    # * clock: UTC ISO 8601 combined date and time string, e.g. 20230812T120000Z
+    # * npt: duration such as "300ms", "1.5m" or "2h45m", valid time units are "ns", "us" (or "µs"), "ms", "s", "m", "h"
+    # * smpte: duration such as "300ms", "1.5m" or "2h45m", valid time units are "ns", "us" (or "µs"), "ms", "s", "m", "h"
+    rtspRangeStart:
+
+    ###############################################
+    # Redirect path parameters (when source is "redirect")
+
+    # RTSP URL which clients will be redirected to.
+    sourceRedirect:
+
+    ###############################################
+    # Raspberry Pi Camera path parameters (when source is "rpiCamera")
+
     # ID of the camera
     rpiCameraCamID: 0
     # width of frames
@@ -359,26 +402,12 @@ paths:
     # format is the one of the strftime() function.
     rpiCameraTextOverlay: '%Y-%m-%d %H:%M:%S - MediaMTX'
 
-    # Username required to publish.
-    # SHA256-hashed values can be inserted with the "sha256:" prefix.
-    publishUser:
-    # Password required to publish.
-    # SHA256-hashed values can be inserted with the "sha256:" prefix.
-    publishPass:
-    # IPs or networks (x.x.x.x/24) allowed to publish.
-    publishIPs: []
-
-    # Username required to read.
-    # SHA256-hashed values can be inserted with the "sha256:" prefix.
-    readUser:
-    # password required to read.
-    # SHA256-hashed values can be inserted with the "sha256:" prefix.
-    readPass:
-    # IPs or networks (x.x.x.x/24) allowed to read.
-    readIPs: []
+    ###############################################
+    # external commands path parameters
 
     # Command to run when this path is initialized.
     # This can be used to publish a stream and keep it always opened.
+    # Prepend ./ to run an executable in the current folder (example: "./ffmpeg")
     # This is terminated with SIGINT when the program closes.
     # The following environment variables are available:
     # * RTSP_PATH: path name
@@ -386,11 +415,12 @@ paths:
     # * G1, G2, ...: regular expression groups, if path name is
     #   a regular expression.
     runOnInit:
-    # Restart the command if it exits suddenly.
+    # Restart the command if it exits.
     runOnInitRestart: no
 
     # Command to run when this path is requested.
     # This can be used to publish a stream on demand.
+    # Prepend ./ to run an executable in the current folder (example: "./ffmpeg")
     # This is terminated with SIGINT when the path is not requested anymore.
     # The following environment variables are available:
     # * RTSP_PATH: path name
@@ -398,7 +428,7 @@ paths:
     # * G1, G2, ...: regular expression groups, if path name is
     #   a regular expression.
     runOnDemand:
-    # Restart the command if it exits suddenly.
+    # Restart the command if it exits.
     runOnDemandRestart: no
     # Readers will be put on hold until the runOnDemand command starts publishing
     # or until this amount of time has passed.
@@ -409,6 +439,7 @@ paths:
 
     # Command to run when the stream is ready to be read, whether it is
     # published by a client or pulled from a server / camera.
+    # Prepend ./ to run an executable in the current folder (example: "./ffmpeg")
     # This is terminated with SIGINT when the stream is not ready anymore.
     # The following environment variables are available:
     # * RTSP_PATH: path name
@@ -416,10 +447,11 @@ paths:
     # * G1, G2, ...: regular expression groups, if path name is
     #   a regular expression.
     runOnReady:
-    # Restart the command if it exits suddenly.
+    # Restart the command if it exits.
     runOnReadyRestart: no
 
     # Command to run when a clients starts reading.
+    # Prepend ./ to run an executable in the current folder (example: "./ffmpeg")
     # This is terminated with SIGINT when a client stops reading.
     # The following environment variables are available:
     # * RTSP_PATH: path name
@@ -427,5 +459,5 @@ paths:
     # * G1, G2, ...: regular expression groups, if path name is
     #   a regular expression.
     runOnRead:
-    # Restart the command if it exits suddenly.
+    # Restart the command if it exits.
     runOnReadRestart: no

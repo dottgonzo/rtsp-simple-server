@@ -20,13 +20,13 @@ import (
 	"github.com/google/uuid"
 	"github.com/notedit/rtmp/format/flv/flvio"
 
-	"github.com/aler9/mediamtx/internal/conf"
-	"github.com/aler9/mediamtx/internal/externalcmd"
-	"github.com/aler9/mediamtx/internal/formatprocessor"
-	"github.com/aler9/mediamtx/internal/logger"
-	"github.com/aler9/mediamtx/internal/rtmp"
-	"github.com/aler9/mediamtx/internal/rtmp/h264conf"
-	"github.com/aler9/mediamtx/internal/rtmp/message"
+	"github.com/bluenviron/mediamtx/internal/conf"
+	"github.com/bluenviron/mediamtx/internal/externalcmd"
+	"github.com/bluenviron/mediamtx/internal/formatprocessor"
+	"github.com/bluenviron/mediamtx/internal/logger"
+	"github.com/bluenviron/mediamtx/internal/rtmp"
+	"github.com/bluenviron/mediamtx/internal/rtmp/h264conf"
+	"github.com/bluenviron/mediamtx/internal/rtmp/message"
 )
 
 const (
@@ -163,7 +163,7 @@ func getRTMPWriteFunc(medi *media.Media, format formats.Format, stream *stream) 
 			tmsg := msg.(*message.Audio)
 
 			if tmsg.AACType == message.AudioAACTypeAU {
-				stream.writeUnit(medi, format, &formatprocessor.UnitMPEG4Audio{
+				stream.writeUnit(medi, format, &formatprocessor.UnitMPEG4AudioGeneric{
 					PTS: tmsg.DTS,
 					AUs: [][]byte{tmsg.Payload},
 					NTP: time.Now(),
@@ -196,20 +196,19 @@ type rtmpConnParent interface {
 }
 
 type rtmpConn struct {
-	isTLS                     bool
-	externalAuthenticationURL string
-	rtspAddress               string
-	readTimeout               conf.StringDuration
-	writeTimeout              conf.StringDuration
-	readBufferCount           int
-	runOnConnect              string
-	runOnConnectRestart       bool
-	wg                        *sync.WaitGroup
-	conn                      *rtmp.Conn
-	nconn                     net.Conn
-	externalCmdPool           *externalcmd.Pool
-	pathManager               rtmpConnPathManager
-	parent                    rtmpConnParent
+	isTLS               bool
+	rtspAddress         string
+	readTimeout         conf.StringDuration
+	writeTimeout        conf.StringDuration
+	readBufferCount     int
+	runOnConnect        string
+	runOnConnectRestart bool
+	wg                  *sync.WaitGroup
+	conn                *rtmp.Conn
+	nconn               net.Conn
+	externalCmdPool     *externalcmd.Pool
+	pathManager         rtmpConnPathManager
+	parent              rtmpConnParent
 
 	ctx        context.Context
 	ctxCancel  func()
@@ -222,7 +221,6 @@ type rtmpConn struct {
 func newRTMPConn(
 	parentCtx context.Context,
 	isTLS bool,
-	externalAuthenticationURL string,
 	rtspAddress string,
 	readTimeout conf.StringDuration,
 	writeTimeout conf.StringDuration,
@@ -238,24 +236,23 @@ func newRTMPConn(
 	ctx, ctxCancel := context.WithCancel(parentCtx)
 
 	c := &rtmpConn{
-		isTLS:                     isTLS,
-		externalAuthenticationURL: externalAuthenticationURL,
-		rtspAddress:               rtspAddress,
-		readTimeout:               readTimeout,
-		writeTimeout:              writeTimeout,
-		readBufferCount:           readBufferCount,
-		runOnConnect:              runOnConnect,
-		runOnConnectRestart:       runOnConnectRestart,
-		wg:                        wg,
-		conn:                      rtmp.NewConn(nconn),
-		nconn:                     nconn,
-		externalCmdPool:           externalCmdPool,
-		pathManager:               pathManager,
-		parent:                    parent,
-		ctx:                       ctx,
-		ctxCancel:                 ctxCancel,
-		uuid:                      uuid.New(),
-		created:                   time.Now(),
+		isTLS:               isTLS,
+		rtspAddress:         rtspAddress,
+		readTimeout:         readTimeout,
+		writeTimeout:        writeTimeout,
+		readBufferCount:     readBufferCount,
+		runOnConnect:        runOnConnect,
+		runOnConnectRestart: runOnConnectRestart,
+		wg:                  wg,
+		conn:                rtmp.NewConn(nconn),
+		nconn:               nconn,
+		externalCmdPool:     externalCmdPool,
+		pathManager:         pathManager,
+		parent:              parent,
+		ctx:                 ctx,
+		ctxCancel:           ctxCancel,
+		uuid:                uuid.New(),
+		created:             time.Now(),
 	}
 
 	c.Log(logger.Info, "opened")
@@ -302,8 +299,8 @@ func (c *rtmpConn) run() {
 				"RTSP_PATH": "",
 				"RTSP_PORT": port,
 			},
-			func(co int) {
-				c.Log(logger.Info, "runOnConnect command exited with code %d", co)
+			func(err error) {
+				c.Log(logger.Info, "runOnConnect command exited: %v", err)
 			})
 
 		defer func() {
@@ -344,15 +341,15 @@ func (c *rtmpConn) runInner(ctx context.Context) error {
 
 	c.nconn.SetReadDeadline(time.Now().Add(time.Duration(c.readTimeout)))
 	c.nconn.SetWriteDeadline(time.Now().Add(time.Duration(c.writeTimeout)))
-	u, isPublishing, err := c.conn.InitializeServer()
+	u, publish, err := c.conn.InitializeServer()
 	if err != nil {
 		return err
 	}
 
-	if !isPublishing {
+	if !publish {
 		return c.runRead(ctx, u)
 	}
-	return c.runPublish(ctx, u)
+	return c.runPublish(u)
 }
 
 func (c *rtmpConn) runRead(ctx context.Context, u *url.URL) error {
@@ -361,29 +358,26 @@ func (c *rtmpConn) runRead(ctx context.Context, u *url.URL) error {
 	res := c.pathManager.readerAdd(pathReaderAddReq{
 		author:   c,
 		pathName: pathName,
-		authenticate: func(
-			pathIPs []fmt.Stringer,
-			pathUser conf.Credential,
-			pathPass conf.Credential,
-		) error {
-			return c.authenticate(pathName, pathIPs, pathUser, pathPass, false, query, rawQuery)
+		credentials: authCredentials{
+			query: rawQuery,
+			ip:    c.ip(),
+			user:  query.Get("user"),
+			pass:  query.Get("pass"),
+			proto: authProtocolRTMP,
+			id:    &c.uuid,
 		},
 	})
 
 	if res.err != nil {
-		if terr, ok := res.err.(pathErrAuthCritical); ok {
+		if terr, ok := res.err.(pathErrAuth); ok {
 			// wait some seconds to stop brute force attacks
 			<-time.After(rtmpConnPauseAfterAuthError)
-			return errors.New(terr.message)
+			return terr.wrapped
 		}
 		return res.err
 	}
 
-	path := res.path
-
-	defer func() {
-		path.readerRemove(pathReaderRemoveReq{author: c})
-	}()
+	defer res.path.readerRemove(pathReaderRemoveReq{author: c})
 
 	c.stateMutex.Lock()
 	c.state = rtmpConnStateRead
@@ -413,15 +407,15 @@ func (c *rtmpConn) runRead(ctx context.Context, u *url.URL) error {
 
 	if videoFormat == nil && audioFormat == nil {
 		return fmt.Errorf(
-			"the stream doesn't contain any supported codec, which are currently H264, MPEG-2 Audio, MPEG-4 Audio")
+			"the stream doesn't contain any supported codec, which are currently H264, MPEG-1/2 Audio, MPEG-4 Audio")
 	}
 
 	defer res.stream.readerRemove(c)
 
 	c.Log(logger.Info, "is reading from path '%s', %s",
-		path.name, sourceMediaInfo(medias))
+		res.path.name, sourceMediaInfo(medias))
 
-	pathConf := path.safeConf()
+	pathConf := res.path.safeConf()
 
 	if pathConf.RunOnRead != "" {
 		c.Log(logger.Info, "runOnRead command started")
@@ -429,9 +423,9 @@ func (c *rtmpConn) runRead(ctx context.Context, u *url.URL) error {
 			c.externalCmdPool,
 			pathConf.RunOnRead,
 			pathConf.RunOnReadRestart,
-			path.externalCmdEnv(),
-			func(co int) {
-				c.Log(logger.Info, "runOnRead command exited with code %d", co)
+			res.path.externalCmdEnv(),
+			func(err error) {
+				c.Log(logger.Info, "runOnRead command exited: %v", err)
 			})
 		defer func() {
 			onReadCmd.Close()
@@ -564,19 +558,23 @@ func (c *rtmpConn) findVideoFormat(stream *stream, ringBuffer *ringbuffer.RingBu
 	return nil, nil
 }
 
-func (c *rtmpConn) findAudioFormat(stream *stream, ringBuffer *ringbuffer.RingBuffer,
-	videoFormat formats.Format, videoFirstIDRFound *bool, videoStartDTS *time.Duration,
+func (c *rtmpConn) findAudioFormat(
+	stream *stream,
+	ringBuffer *ringbuffer.RingBuffer,
+	videoFormat formats.Format,
+	videoFirstIDRFound *bool,
+	videoStartDTS *time.Duration,
 ) (*media.Media, formats.Format) {
-	var audioFormatMPEG4 *formats.MPEG4Audio
-	audioMedia := stream.medias().FindFormat(&audioFormatMPEG4)
+	var audioFormatMPEG4Generic *formats.MPEG4AudioGeneric
+	audioMedia := stream.medias().FindFormat(&audioFormatMPEG4Generic)
 
 	if audioMedia != nil {
 		audioStartPTSFilled := false
 		var audioStartPTS time.Duration
 
-		stream.readerAdd(c, audioMedia, audioFormatMPEG4, func(unit formatprocessor.Unit) {
+		stream.readerAdd(c, audioMedia, audioFormatMPEG4Generic, func(unit formatprocessor.Unit) {
 			ringBuffer.Push(func() error {
-				tunit := unit.(*formatprocessor.UnitMPEG4Audio)
+				tunit := unit.(*formatprocessor.UnitMPEG4AudioGeneric)
 
 				if tunit.AUs == nil {
 					return nil
@@ -611,7 +609,7 @@ func (c *rtmpConn) findAudioFormat(stream *stream, ringBuffer *ringbuffer.RingBu
 						AACType:         message.AudioAACTypeAU,
 						Payload:         au,
 						DTS: pts + time.Duration(i)*mpeg4audio.SamplesPerAccessUnit*
-							time.Second/time.Duration(audioFormatMPEG4.ClockRate()),
+							time.Second/time.Duration(audioFormatMPEG4Generic.ClockRate()),
 					})
 					if err != nil {
 						return err
@@ -622,7 +620,65 @@ func (c *rtmpConn) findAudioFormat(stream *stream, ringBuffer *ringbuffer.RingBu
 			})
 		})
 
-		return audioMedia, audioFormatMPEG4
+		return audioMedia, audioFormatMPEG4Generic
+	}
+
+	var audioFormatMPEG4AudioLATM *formats.MPEG4AudioLATM
+	audioMedia = stream.medias().FindFormat(&audioFormatMPEG4AudioLATM)
+
+	if audioMedia != nil &&
+		audioFormatMPEG4AudioLATM.Config != nil &&
+		len(audioFormatMPEG4AudioLATM.Config.Programs) == 1 &&
+		len(audioFormatMPEG4AudioLATM.Config.Programs[0].Layers) == 1 {
+		audioStartPTSFilled := false
+		var audioStartPTS time.Duration
+
+		stream.readerAdd(c, audioMedia, audioFormatMPEG4AudioLATM, func(unit formatprocessor.Unit) {
+			ringBuffer.Push(func() error {
+				tunit := unit.(*formatprocessor.UnitMPEG4AudioLATM)
+
+				if tunit.AU == nil {
+					return nil
+				}
+
+				if !audioStartPTSFilled {
+					audioStartPTSFilled = true
+					audioStartPTS = tunit.PTS
+				}
+				pts := tunit.PTS - audioStartPTS
+
+				if videoFormat != nil {
+					if !*videoFirstIDRFound {
+						return nil
+					}
+
+					pts -= *videoStartDTS
+					if pts < 0 {
+						return nil
+					}
+				}
+
+				c.nconn.SetWriteDeadline(time.Now().Add(time.Duration(c.writeTimeout)))
+				err := c.conn.WriteMessage(&message.Audio{
+					ChunkStreamID:   message.AudioChunkStreamID,
+					MessageStreamID: 0x1000000,
+					Codec:           message.CodecMPEG4Audio,
+					Rate:            flvio.SOUND_44Khz,
+					Depth:           flvio.SOUND_16BIT,
+					Channels:        flvio.SOUND_STEREO,
+					AACType:         message.AudioAACTypeAU,
+					Payload:         tunit.AU,
+					DTS:             pts,
+				})
+				if err != nil {
+					return err
+				}
+
+				return nil
+			})
+		})
+
+		return audioMedia, audioFormatMPEG4AudioLATM
 	}
 
 	var audioFormatMPEG2 *formats.MPEG2Audio
@@ -661,7 +717,7 @@ func (c *rtmpConn) findAudioFormat(stream *stream, ringBuffer *ringbuffer.RingBu
 					}
 
 					if !(!h.MPEG2 && h.Layer == 3) {
-						return fmt.Errorf("RTMP only supports MPEG-1 audio layer 3")
+						return fmt.Errorf("RTMP only supports MPEG-1 layer 3 audio")
 					}
 
 					channels := uint8(flvio.SOUND_STEREO)
@@ -710,35 +766,32 @@ func (c *rtmpConn) findAudioFormat(stream *stream, ringBuffer *ringbuffer.RingBu
 	return nil, nil
 }
 
-func (c *rtmpConn) runPublish(ctx context.Context, u *url.URL) error {
+func (c *rtmpConn) runPublish(u *url.URL) error {
 	pathName, query, rawQuery := pathNameAndQuery(u)
 
 	res := c.pathManager.publisherAdd(pathPublisherAddReq{
 		author:   c,
 		pathName: pathName,
-		authenticate: func(
-			pathIPs []fmt.Stringer,
-			pathUser conf.Credential,
-			pathPass conf.Credential,
-		) error {
-			return c.authenticate(pathName, pathIPs, pathUser, pathPass, true, query, rawQuery)
+		credentials: authCredentials{
+			query: rawQuery,
+			ip:    c.ip(),
+			user:  query.Get("user"),
+			pass:  query.Get("pass"),
+			proto: authProtocolRTMP,
+			id:    &c.uuid,
 		},
 	})
 
 	if res.err != nil {
-		if terr, ok := res.err.(pathErrAuthCritical); ok {
+		if terr, ok := res.err.(pathErrAuth); ok {
 			// wait some seconds to stop brute force attacks
 			<-time.After(rtmpConnPauseAfterAuthError)
-			return errors.New(terr.message)
+			return terr.wrapped
 		}
 		return res.err
 	}
 
-	path := res.path
-
-	defer func() {
-		path.publisherRemove(pathPublisherRemoveReq{author: c})
-	}()
+	defer res.path.publisherRemove(pathPublisherRemoveReq{author: c})
 
 	c.stateMutex.Lock()
 	c.state = rtmpConnStatePublish
@@ -769,7 +822,7 @@ func (c *rtmpConn) runPublish(ctx context.Context, u *url.URL) error {
 		medias = append(medias, audioMedia)
 	}
 
-	rres := path.publisherStart(pathPublisherStartReq{
+	rres := res.path.publisherStart(pathPublisherStartReq{
 		author:             c,
 		medias:             medias,
 		generateRTPPackets: true,
@@ -779,7 +832,7 @@ func (c *rtmpConn) runPublish(ctx context.Context, u *url.URL) error {
 	}
 
 	c.Log(logger.Info, "is publishing to path '%s', %s",
-		path.name,
+		res.path.name,
 		sourceMediaInfo(medias))
 
 	// disable write deadline to allow outgoing acknowledges
@@ -819,73 +872,40 @@ func (c *rtmpConn) runPublish(ctx context.Context, u *url.URL) error {
 	}
 }
 
-func (c *rtmpConn) authenticate(
-	pathName string,
-	pathIPs []fmt.Stringer,
-	pathUser conf.Credential,
-	pathPass conf.Credential,
-	isPublishing bool,
-	query url.Values,
-	rawQuery string,
-) error {
-	if c.externalAuthenticationURL != "" {
-		err := externalAuth(
-			c.externalAuthenticationURL,
-			c.ip().String(),
-			query.Get("user"),
-			query.Get("pass"),
-			pathName,
-			externalAuthProtoRTMP,
-			&c.uuid,
-			isPublishing,
-			rawQuery)
-		if err != nil {
-			return pathErrAuthCritical{
-				message: fmt.Sprintf("external authentication failed: %s", err),
-			}
-		}
-	}
-
-	if pathIPs != nil {
-		ip := c.ip()
-		if !ipEqualOrInRange(ip, pathIPs) {
-			return pathErrAuthCritical{
-				message: fmt.Sprintf("IP '%s' not allowed", ip),
-			}
-		}
-	}
-
-	if pathUser != "" {
-		if query.Get("user") != string(pathUser) ||
-			query.Get("pass") != string(pathPass) {
-			return pathErrAuthCritical{
-				message: "invalid credentials",
-			}
-		}
-	}
-
-	return nil
-}
-
 // apiReaderDescribe implements reader.
-func (c *rtmpConn) apiReaderDescribe() interface{} {
-	return struct {
-		Type string `json:"type"`
-		ID   string `json:"id"`
-	}{"rtmpConn", c.uuid.String()}
+func (c *rtmpConn) apiReaderDescribe() pathAPISourceOrReader {
+	return pathAPISourceOrReader{
+		Type: func() string {
+			if c.isTLS {
+				return "rtmpsConn"
+			}
+			return "rtmpConn"
+		}(),
+		ID: c.uuid.String(),
+	}
 }
 
 // apiSourceDescribe implements source.
-func (c *rtmpConn) apiSourceDescribe() interface{} {
-	var typ string
-	if c.isTLS {
-		typ = "rtmpsConn"
-	} else {
-		typ = "rtmpConn"
-	}
+func (c *rtmpConn) apiSourceDescribe() pathAPISourceOrReader {
+	return c.apiReaderDescribe()
+}
 
-	return struct {
-		Type string `json:"type"`
-		ID   string `json:"id"`
-	}{typ, c.uuid.String()}
+func (c *rtmpConn) apiItem() *apiRTMPConn {
+	return &apiRTMPConn{
+		ID:         c.uuid,
+		Created:    c.created,
+		RemoteAddr: c.remoteAddr().String(),
+		State: func() string {
+			switch c.safeState() {
+			case rtmpConnStateRead:
+				return "read"
+
+			case rtmpConnStatePublish:
+				return "publish"
+			}
+			return "idle"
+		}(),
+		BytesReceived: c.conn.BytesReceived(),
+		BytesSent:     c.conn.BytesSent(),
+	}
 }

@@ -15,9 +15,9 @@ import (
 	"github.com/bluenviron/gortsplib/v3/pkg/formats"
 	"github.com/bluenviron/gortsplib/v3/pkg/media"
 
-	"github.com/aler9/mediamtx/internal/conf"
-	"github.com/aler9/mediamtx/internal/formatprocessor"
-	"github.com/aler9/mediamtx/internal/logger"
+	"github.com/bluenviron/mediamtx/internal/conf"
+	"github.com/bluenviron/mediamtx/internal/formatprocessor"
+	"github.com/bluenviron/mediamtx/internal/logger"
 )
 
 type hlsSourceParent interface {
@@ -142,7 +142,7 @@ func (s *hlsSource) run(ctx context.Context, cnf *conf.PathConf, reloadConf chan
 				}
 
 				c.OnData(track, func(pts time.Duration, unit interface{}) {
-					stream.writeUnit(medi, medi.Formats[0], &formatprocessor.UnitMPEG4Audio{
+					stream.writeUnit(medi, medi.Formats[0], &formatprocessor.UnitMPEG4AudioGeneric{
 						PTS: pts,
 						AUs: [][]byte{unit.([]byte)},
 						NTP: time.Now(),
@@ -206,8 +206,9 @@ func (s *hlsSource) run(ctx context.Context, cnf *conf.PathConf, reloadConf chan
 }
 
 // apiSourceDescribe implements sourceStaticImpl.
-func (*hlsSource) apiSourceDescribe() interface{} {
-	return struct {
-		Type string `json:"type"`
-	}{"hlsSource"}
+func (*hlsSource) apiSourceDescribe() pathAPISourceOrReader {
+	return pathAPISourceOrReader{
+		Type: "hlsSource",
+		ID:   "",
+	}
 }

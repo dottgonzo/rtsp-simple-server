@@ -20,19 +20,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type testHLSServer struct {
+type testHLSManager struct {
 	s *http.Server
 
 	clientConnected chan struct{}
 }
 
-func newTestHLSServer() (*testHLSServer, error) {
+func newTestHLSManager() (*testHLSManager, error) {
 	ln, err := net.Listen("tcp", "localhost:5780")
 	if err != nil {
 		return nil, err
 	}
 
-	ts := &testHLSServer{
+	ts := &testHLSManager{
 		clientConnected: make(chan struct{}),
 	}
 
@@ -48,11 +48,11 @@ func newTestHLSServer() (*testHLSServer, error) {
 	return ts, nil
 }
 
-func (ts *testHLSServer) close() {
+func (ts *testHLSManager) close() {
 	ts.s.Shutdown(context.Background())
 }
 
-func (ts *testHLSServer) onPlaylist(ctx *gin.Context) {
+func (ts *testHLSManager) onPlaylist(ctx *gin.Context) {
 	cnt := `#EXTM3U
 #EXT-X-VERSION:3
 #EXT-X-ALLOW-CACHE:NO
@@ -69,7 +69,7 @@ segment2.ts
 	io.Copy(ctx.Writer, bytes.NewReader([]byte(cnt)))
 }
 
-func (ts *testHLSServer) onSegment1(ctx *gin.Context) {
+func (ts *testHLSManager) onSegment1(ctx *gin.Context) {
 	ctx.Writer.Header().Set("Content-Type", `video/MP2T`)
 	mux := astits.NewMuxer(context.Background(), ctx.Writer)
 
@@ -87,25 +87,6 @@ func (ts *testHLSServer) onSegment1(ctx *gin.Context) {
 
 	mux.WriteTables()
 
-	enc, _ := h264.AnnexBMarshal([][]byte{
-		{1}, // non-IDR
-	})
-
-	mux.WriteData(&astits.MuxerData{
-		PID: 256,
-		PES: &astits.PESData{
-			Header: &astits.PESHeader{
-				OptionalHeader: &astits.PESOptionalHeader{
-					MarkerBits:      2,
-					PTSDTSIndicator: astits.PTSDTSIndicatorOnlyPTS,
-					PTS:             &astits.ClockReference{Base: int64(1 * 90000)},
-				},
-				StreamID: 224,
-			},
-			Data: enc,
-		},
-	})
-
 	pkts := mpeg4audio.ADTSPackets{
 		{
 			Type:         2,
@@ -114,7 +95,7 @@ func (ts *testHLSServer) onSegment1(ctx *gin.Context) {
 			AU:           []byte{0x01, 0x02, 0x03, 0x04},
 		},
 	}
-	enc, _ = pkts.Marshal()
+	enc, _ := pkts.Marshal()
 
 	mux.WriteData(&astits.MuxerData{
 		PID: 257,
@@ -132,7 +113,7 @@ func (ts *testHLSServer) onSegment1(ctx *gin.Context) {
 	})
 }
 
-func (ts *testHLSServer) onSegment2(ctx *gin.Context) {
+func (ts *testHLSManager) onSegment2(ctx *gin.Context) {
 	<-ts.clientConnected
 
 	ctx.Writer.Header().Set("Content-Type", `video/MP2T`)
@@ -218,7 +199,7 @@ func (ts *testHLSServer) onSegment2(ctx *gin.Context) {
 }
 
 func TestHLSSource(t *testing.T) {
-	ts, err := newTestHLSServer()
+	ts, err := newTestHLSManager()
 	require.NoError(t, err)
 	defer ts.close()
 

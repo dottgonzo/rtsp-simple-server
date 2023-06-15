@@ -2,6 +2,7 @@
 package externalcmd
 
 import (
+	"errors"
 	"strings"
 	"time"
 )
@@ -9,6 +10,8 @@ import (
 const (
 	restartPause = 5 * time.Second
 )
+
+var errTerminated = errors.New("terminated")
 
 // Environment is a Cmd environment.
 type Environment map[string]string
@@ -19,7 +22,7 @@ type Cmd struct {
 	cmdstr  string
 	restart bool
 	env     Environment
-	onExit  func(int)
+	onExit  func(error)
 
 	// in
 	terminate chan struct{}
@@ -31,8 +34,10 @@ func NewCmd(
 	cmdstr string,
 	restart bool,
 	env Environment,
-	onExit func(int),
+	onExit func(error),
 ) *Cmd {
+	// replace variables in both Linux and Windows, in order to allow using the
+	// same commands on both of them.
 	for key, val := range env {
 		cmdstr = strings.ReplaceAll(cmdstr, "$"+key, val)
 	}
@@ -62,28 +67,22 @@ func (e *Cmd) run() {
 	defer e.pool.wg.Done()
 
 	for {
-		ok := func() bool {
-			c, ok := e.runInner()
-			if !ok {
-				return false
-			}
+		err := e.runOSSpecific()
+		if err == errTerminated {
+			return
+		}
 
-			e.onExit(c)
+		e.onExit(err)
 
-			if !e.restart {
-				<-e.terminate
-				return false
-			}
+		if !e.restart {
+			<-e.terminate
+			return
+		}
 
-			select {
-			case <-time.After(restartPause):
-				return true
-			case <-e.terminate:
-				return false
-			}
-		}()
-		if !ok {
-			break
+		select {
+		case <-time.After(restartPause):
+		case <-e.terminate:
+			return
 		}
 	}
 }

@@ -10,13 +10,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/bluenviron/gortsplib/v3/pkg/base"
 	"github.com/bluenviron/gortsplib/v3/pkg/media"
 	"github.com/bluenviron/gortsplib/v3/pkg/url"
 
-	"github.com/aler9/mediamtx/internal/conf"
-	"github.com/aler9/mediamtx/internal/externalcmd"
-	"github.com/aler9/mediamtx/internal/logger"
+	"github.com/bluenviron/mediamtx/internal/conf"
+	"github.com/bluenviron/mediamtx/internal/externalcmd"
+	"github.com/bluenviron/mediamtx/internal/logger"
 )
 
 func newEmptyTimer() *time.Timer {
@@ -25,11 +24,14 @@ func newEmptyTimer() *time.Timer {
 	return t
 }
 
-type authenticateFunc func(
-	pathIPs []fmt.Stringer,
-	pathUser conf.Credential,
-	pathPass conf.Credential,
-) error
+type pathErrAuth struct {
+	wrapped error
+}
+
+// Error implements the error interface.
+func (e pathErrAuth) Error() string {
+	return "authentication error"
+}
 
 type pathErrNoOnePublishing struct {
 	pathName string
@@ -38,26 +40,6 @@ type pathErrNoOnePublishing struct {
 // Error implements the error interface.
 func (e pathErrNoOnePublishing) Error() string {
 	return fmt.Sprintf("no one is publishing to path '%s'", e.pathName)
-}
-
-type pathErrAuthNotCritical struct {
-	message  string
-	response *base.Response
-}
-
-// Error implements the error interface.
-func (pathErrAuthNotCritical) Error() string {
-	return "non-critical authentication error"
-}
-
-type pathErrAuthCritical struct {
-	message  string
-	response *base.Response
-}
-
-// Error implements the error interface.
-func (pathErrAuthCritical) Error() string {
-	return "critical authentication error"
 }
 
 type pathParent interface {
@@ -101,6 +83,18 @@ type pathPublisherRemoveReq struct {
 	res    chan struct{}
 }
 
+type pathGetPathConfRes struct {
+	conf *conf.PathConf
+	err  error
+}
+
+type pathGetPathConfReq struct {
+	name        string
+	publish     bool
+	credentials authCredentials
+	res         chan pathGetPathConfRes
+}
+
 type pathDescribeRes struct {
 	path     *path
 	stream   *stream
@@ -109,10 +103,10 @@ type pathDescribeRes struct {
 }
 
 type pathDescribeReq struct {
-	pathName     string
-	url          *url.URL
-	authenticate authenticateFunc
-	res          chan pathDescribeRes
+	pathName    string
+	url         *url.URL
+	credentials authCredentials
+	res         chan pathDescribeRes
 }
 
 type pathReaderSetupPlayRes struct {
@@ -122,10 +116,11 @@ type pathReaderSetupPlayRes struct {
 }
 
 type pathReaderAddReq struct {
-	author       reader
-	pathName     string
-	authenticate authenticateFunc
-	res          chan pathReaderSetupPlayRes
+	author      reader
+	pathName    string
+	skipAuth    bool
+	credentials authCredentials
+	res         chan pathReaderSetupPlayRes
 }
 
 type pathPublisherAnnounceRes struct {
@@ -134,10 +129,11 @@ type pathPublisherAnnounceRes struct {
 }
 
 type pathPublisherAddReq struct {
-	author       publisher
-	pathName     string
-	authenticate authenticateFunc
-	res          chan pathPublisherAnnounceRes
+	author      publisher
+	pathName    string
+	skipAuth    bool
+	credentials authCredentials
+	res         chan pathPublisherAnnounceRes
 }
 
 type pathPublisherRecordRes struct {
@@ -157,33 +153,29 @@ type pathPublisherStopReq struct {
 	res    chan struct{}
 }
 
-type pathAPIPathsListItem struct {
-	ConfName      string         `json:"confName"`
-	Conf          *conf.PathConf `json:"conf"`
-	Source        interface{}    `json:"source"`
-	SourceReady   bool           `json:"sourceReady"`
-	Tracks        []string       `json:"tracks"`
-	BytesReceived uint64         `json:"bytesReceived"`
-	Readers       []interface{}  `json:"readers"`
-}
-
-type pathAPIPathsListData struct {
-	Items map[string]pathAPIPathsListItem `json:"items"`
+type pathAPISourceOrReader struct {
+	Type string `json:"type"`
+	ID   string `json:"id"`
 }
 
 type pathAPIPathsListRes struct {
-	data  *pathAPIPathsListData
+	data  *apiPathsList
 	paths map[string]*path
-	err   error
 }
 
 type pathAPIPathsListReq struct {
 	res chan pathAPIPathsListRes
 }
 
-type pathAPIPathsListSubReq struct {
-	data *pathAPIPathsListData
-	res  chan struct{}
+type pathAPIPathsGetRes struct {
+	path *path
+	data *apiPath
+	err  error
+}
+
+type pathAPIPathsGetReq struct {
+	name string
+	res  chan pathAPIPathsGetRes
 }
 
 type path struct {
@@ -229,7 +221,7 @@ type path struct {
 	chPublisherStop           chan pathPublisherStopReq
 	chReaderAdd               chan pathReaderAddReq
 	chReaderRemove            chan pathReaderRemoveReq
-	chAPIPathsList            chan pathAPIPathsListSubReq
+	chAPIPathsGet             chan pathAPIPathsGetReq
 
 	// out
 	done chan struct{}
@@ -283,7 +275,7 @@ func newPath(
 		chPublisherStop:                make(chan pathPublisherStopReq),
 		chReaderAdd:                    make(chan pathReaderAddReq),
 		chReaderRemove:                 make(chan pathReaderRemoveReq),
-		chAPIPathsList:                 make(chan pathAPIPathsListSubReq),
+		chAPIPathsGet:                  make(chan pathAPIPathsGetReq),
 		done:                           make(chan struct{}),
 	}
 
@@ -341,8 +333,8 @@ func (pa *path) run() {
 			pa.conf.RunOnInit,
 			pa.conf.RunOnInitRestart,
 			pa.externalCmdEnv(),
-			func(co int) {
-				pa.Log(logger.Info, "runOnInit command exited with code %d", co)
+			func(err error) {
+				pa.Log(logger.Info, "runOnInit command exited: %v", err)
 			})
 	}
 
@@ -486,8 +478,8 @@ func (pa *path) run() {
 			case req := <-pa.chReaderRemove:
 				pa.handleReaderRemove(req)
 
-			case req := <-pa.chAPIPathsList:
-				pa.handleAPIPathsList(req)
+			case req := <-pa.chAPIPathsGet:
+				pa.handleAPIPathsGet(req)
 
 			case <-pa.ctx.Done():
 				return fmt.Errorf("terminated")
@@ -596,8 +588,8 @@ func (pa *path) onDemandPublisherStart() {
 		pa.conf.RunOnDemand,
 		pa.conf.RunOnDemandRestart,
 		pa.externalCmdEnv(),
-		func(co int) {
-			pa.Log(logger.Info, "runOnDemand command exited with code %d", co)
+		func(err error) {
+			pa.Log(logger.Info, "runOnDemand command exited: %v", err)
 		})
 
 	pa.onDemandPublisherReadyTimer.Stop()
@@ -655,8 +647,8 @@ func (pa *path) sourceSetReady(medias media.Medias, allocateEncoder bool) error 
 			pa.conf.RunOnReady,
 			pa.conf.RunOnReadyRestart,
 			pa.externalCmdEnv(),
-			func(co int) {
-				pa.Log(logger.Info, "runOnReady command exited with code %d", co)
+			func(err error) {
+				pa.Log(logger.Info, "runOnReady command exited: %v", err)
 			})
 	}
 
@@ -895,33 +887,35 @@ func (pa *path) handleReaderAddPost(req pathReaderAddReq) {
 	}
 }
 
-func (pa *path) handleAPIPathsList(req pathAPIPathsListSubReq) {
-	req.data.Items[pa.name] = pathAPIPathsListItem{
-		ConfName: pa.confName,
-		Conf:     pa.conf,
-		Source: func() interface{} {
-			if pa.source == nil {
-				return nil
-			}
-			return pa.source.apiSourceDescribe()
-		}(),
-		SourceReady: pa.stream != nil,
-		Tracks: func() []string {
-			if pa.stream == nil {
-				return []string{}
-			}
-			return mediasDescription(pa.stream.medias())
-		}(),
-		BytesReceived: atomic.LoadUint64(pa.bytesReceived),
-		Readers: func() []interface{} {
-			ret := []interface{}{}
-			for r := range pa.readers {
-				ret = append(ret, r.apiReaderDescribe())
-			}
-			return ret
-		}(),
+func (pa *path) handleAPIPathsGet(req pathAPIPathsGetReq) {
+	req.res <- pathAPIPathsGetRes{
+		data: &apiPath{
+			Name:     pa.name,
+			ConfName: pa.confName,
+			Conf:     pa.conf,
+			Source: func() interface{} {
+				if pa.source == nil {
+					return nil
+				}
+				return pa.source.apiSourceDescribe()
+			}(),
+			SourceReady: pa.stream != nil,
+			Tracks: func() []string {
+				if pa.stream == nil {
+					return []string{}
+				}
+				return mediasDescription(pa.stream.medias())
+			}(),
+			BytesReceived: atomic.LoadUint64(pa.bytesReceived),
+			Readers: func() []interface{} {
+				ret := []interface{}{}
+				for r := range pa.readers {
+					ret = append(ret, r.apiReaderDescribe())
+				}
+				return ret
+			}(),
+		},
 	}
-	close(req.res)
 }
 
 // reloadConf is called by pathManager.
@@ -1035,13 +1029,15 @@ func (pa *path) readerRemove(req pathReaderRemoveReq) {
 	}
 }
 
-// apiPathsList is called by api.
-func (pa *path) apiPathsList(req pathAPIPathsListSubReq) {
-	req.res = make(chan struct{})
+// apiPathsGet is called by api.
+func (pa *path) apiPathsGet(req pathAPIPathsGetReq) (*apiPath, error) {
+	req.res = make(chan pathAPIPathsGetRes)
 	select {
-	case pa.chAPIPathsList <- req:
-		<-req.res
+	case pa.chAPIPathsGet <- req:
+		res := <-req.res
+		return res.data, res.err
 
 	case <-pa.ctx.Done():
+		return nil, fmt.Errorf("terminated")
 	}
 }

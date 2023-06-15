@@ -8,7 +8,7 @@ import (
 	"github.com/bluenviron/gortsplib/v3/pkg/formats/rtpvp8"
 	"github.com/pion/rtp"
 
-	"github.com/aler9/mediamtx/internal/logger"
+	"github.com/bluenviron/mediamtx/internal/logger"
 )
 
 // UnitVP8 is a VP8 data unit.
@@ -40,7 +40,7 @@ func newVP8(
 	udpMaxPayloadSize int,
 	forma *formats.VP8,
 	generateRTPPackets bool,
-	log logger.Writer,
+	_ logger.Writer,
 ) (*formatProcessorVP8, error) {
 	t := &formatProcessorVP8{
 		udpMaxPayloadSize: udpMaxPayloadSize,
@@ -48,14 +48,21 @@ func newVP8(
 	}
 
 	if generateRTPPackets {
-		t.encoder = &rtpvp8.Encoder{
-			PayloadMaxSize: t.udpMaxPayloadSize - 12,
-			PayloadType:    forma.PayloadTyp,
+		err := t.createEncoder()
+		if err != nil {
+			return nil, err
 		}
-		t.encoder.Init()
 	}
 
 	return t, nil
+}
+
+func (t *formatProcessorVP8) createEncoder() error {
+	t.encoder = &rtpvp8.Encoder{
+		PayloadMaxSize: t.udpMaxPayloadSize - 12,
+		PayloadType:    t.format.PayloadTyp,
+	}
+	return t.encoder.Init()
 }
 
 func (t *formatProcessorVP8) Process(unit Unit, hasNonRTSPReaders bool) error { //nolint:dupl
@@ -74,9 +81,13 @@ func (t *formatProcessorVP8) Process(unit Unit, hasNonRTSPReaders bool) error { 
 		}
 
 		// decode from RTP
-		if hasNonRTSPReaders {
+		if hasNonRTSPReaders || t.decoder != nil {
 			if t.decoder == nil {
-				t.decoder = t.format.CreateDecoder()
+				var err error
+				t.decoder, err = t.format.CreateDecoder2()
+				if err != nil {
+					return err
+				}
 			}
 
 			frame, pts, err := t.decoder.Decode(pkt)
@@ -103,4 +114,11 @@ func (t *formatProcessorVP8) Process(unit Unit, hasNonRTSPReaders bool) error { 
 	tunit.RTPPackets = pkts
 
 	return nil
+}
+
+func (t *formatProcessorVP8) UnitForRTPPacket(pkt *rtp.Packet, ntp time.Time) Unit {
+	return &UnitVP8{
+		RTPPackets: []*rtp.Packet{pkt},
+		NTP:        ntp,
+	}
 }

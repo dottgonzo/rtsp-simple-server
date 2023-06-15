@@ -2,99 +2,22 @@ package core
 
 import (
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"net"
 	"sync"
 	"time"
 
 	"github.com/bluenviron/gortsplib/v3"
+	"github.com/bluenviron/gortsplib/v3/pkg/auth"
 	"github.com/bluenviron/gortsplib/v3/pkg/base"
-	"github.com/bluenviron/gortsplib/v3/pkg/formats"
-	"github.com/bluenviron/gortsplib/v3/pkg/media"
 	"github.com/bluenviron/gortsplib/v3/pkg/url"
 	"github.com/google/uuid"
 	"github.com/pion/rtp"
 
-	"github.com/aler9/mediamtx/internal/conf"
-	"github.com/aler9/mediamtx/internal/externalcmd"
-	"github.com/aler9/mediamtx/internal/formatprocessor"
-	"github.com/aler9/mediamtx/internal/logger"
+	"github.com/bluenviron/mediamtx/internal/conf"
+	"github.com/bluenviron/mediamtx/internal/externalcmd"
+	"github.com/bluenviron/mediamtx/internal/logger"
 )
-
-const (
-	pauseAfterAuthError = 2 * time.Second
-)
-
-type rtspWriteFunc func(*rtp.Packet)
-
-func getRTSPWriteFunc(medi *media.Media, forma formats.Format, stream *stream) rtspWriteFunc {
-	switch forma.(type) {
-	case *formats.H264:
-		return func(pkt *rtp.Packet) {
-			stream.writeUnit(medi, forma, &formatprocessor.UnitH264{
-				RTPPackets: []*rtp.Packet{pkt},
-				NTP:        time.Now(),
-			})
-		}
-
-	case *formats.H265:
-		return func(pkt *rtp.Packet) {
-			stream.writeUnit(medi, forma, &formatprocessor.UnitH265{
-				RTPPackets: []*rtp.Packet{pkt},
-				NTP:        time.Now(),
-			})
-		}
-
-	case *formats.VP8:
-		return func(pkt *rtp.Packet) {
-			stream.writeUnit(medi, forma, &formatprocessor.UnitVP8{
-				RTPPackets: []*rtp.Packet{pkt},
-				NTP:        time.Now(),
-			})
-		}
-
-	case *formats.VP9:
-		return func(pkt *rtp.Packet) {
-			stream.writeUnit(medi, forma, &formatprocessor.UnitVP9{
-				RTPPackets: []*rtp.Packet{pkt},
-				NTP:        time.Now(),
-			})
-		}
-
-	case *formats.MPEG2Audio:
-		return func(pkt *rtp.Packet) {
-			stream.writeUnit(medi, forma, &formatprocessor.UnitMPEG2Audio{
-				RTPPackets: []*rtp.Packet{pkt},
-				NTP:        time.Now(),
-			})
-		}
-
-	case *formats.MPEG4Audio:
-		return func(pkt *rtp.Packet) {
-			stream.writeUnit(medi, forma, &formatprocessor.UnitMPEG4Audio{
-				RTPPackets: []*rtp.Packet{pkt},
-				NTP:        time.Now(),
-			})
-		}
-
-	case *formats.Opus:
-		return func(pkt *rtp.Packet) {
-			stream.writeUnit(medi, forma, &formatprocessor.UnitOpus{
-				RTPPackets: []*rtp.Packet{pkt},
-				NTP:        time.Now(),
-			})
-		}
-
-	default:
-		return func(pkt *rtp.Packet) {
-			stream.writeUnit(medi, forma, &formatprocessor.UnitGeneric{
-				RTPPackets: []*rtp.Packet{pkt},
-				NTP:        time.Now(),
-			})
-		}
-	}
-}
 
 type rtspSessionPathManager interface {
 	publisherAdd(req pathPublisherAddReq) pathPublisherAnnounceRes
@@ -202,29 +125,28 @@ func (s *rtspSession) onAnnounce(c *rtspConn, ctx *gortsplib.ServerHandlerOnAnno
 	}
 	ctx.Path = ctx.Path[1:]
 
+	if c.authNonce == "" {
+		c.authNonce = auth.GenerateNonce()
+	}
+
 	res := s.pathManager.publisherAdd(pathPublisherAddReq{
 		author:   s,
 		pathName: ctx.Path,
-		authenticate: func(
-			pathIPs []fmt.Stringer,
-			pathUser conf.Credential,
-			pathPass conf.Credential,
-		) error {
-			return c.authenticate(ctx.Path, ctx.Query, pathIPs, pathUser, pathPass, true, ctx.Request, nil)
+		credentials: authCredentials{
+			query:       ctx.Query,
+			ip:          c.ip(),
+			proto:       authProtocolRTSP,
+			id:          &c.uuid,
+			rtspRequest: ctx.Request,
+			rtspBaseURL: nil,
+			rtspNonce:   c.authNonce,
 		},
 	})
 
 	if res.err != nil {
 		switch terr := res.err.(type) {
-		case pathErrAuthNotCritical:
-			s.Log(logger.Debug, "non-critical authentication error: %s", terr.message)
-			return terr.response, nil
-
-		case pathErrAuthCritical:
-			// wait some seconds to stop brute force attacks
-			<-time.After(pauseAfterAuthError)
-
-			return terr.response, errors.New(terr.message)
+		case pathErrAuth:
+			return c.handleAuthError(terr.wrapped)
 
 		default:
 			return &base.Response{
@@ -268,42 +190,42 @@ func (s *rtspSession) onSetup(c *rtspConn, ctx *gortsplib.ServerHandlerOnSetupCt
 
 	switch s.session.State() {
 	case gortsplib.ServerSessionStateInitial, gortsplib.ServerSessionStatePrePlay: // play
+		baseURL := &url.URL{
+			Scheme:   ctx.Request.URL.Scheme,
+			Host:     ctx.Request.URL.Host,
+			Path:     ctx.Path,
+			RawQuery: ctx.Query,
+		}
+
+		if ctx.Query != "" {
+			baseURL.RawQuery += "/"
+		} else {
+			baseURL.Path += "/"
+		}
+
+		if c.authNonce == "" {
+			c.authNonce = auth.GenerateNonce()
+		}
+
 		res := s.pathManager.readerAdd(pathReaderAddReq{
 			author:   s,
 			pathName: ctx.Path,
-			authenticate: func(
-				pathIPs []fmt.Stringer,
-				pathUser conf.Credential,
-				pathPass conf.Credential,
-			) error {
-				baseURL := &url.URL{
-					Scheme:   ctx.Request.URL.Scheme,
-					Host:     ctx.Request.URL.Host,
-					Path:     ctx.Path,
-					RawQuery: ctx.Query,
-				}
-
-				if ctx.Query != "" {
-					baseURL.RawQuery += "/"
-				} else {
-					baseURL.Path += "/"
-				}
-
-				return c.authenticate(ctx.Path, ctx.Query, pathIPs, pathUser, pathPass, false, ctx.Request, baseURL)
+			credentials: authCredentials{
+				query:       ctx.Query,
+				ip:          c.ip(),
+				proto:       authProtocolRTSP,
+				id:          &c.uuid,
+				rtspRequest: ctx.Request,
+				rtspBaseURL: baseURL,
+				rtspNonce:   c.authNonce,
 			},
 		})
 
 		if res.err != nil {
 			switch terr := res.err.(type) {
-			case pathErrAuthNotCritical:
-				s.Log(logger.Debug, "non-critical authentication error: %s", terr.message)
-				return terr.response, nil, nil
-
-			case pathErrAuthCritical:
-				// wait some seconds to stop brute force attacks
-				<-time.After(pauseAfterAuthError)
-
-				return terr.response, nil, errors.New(terr.message)
+			case pathErrAuth:
+				res, err := c.handleAuthError(terr.wrapped)
+				return res, nil, err
 
 			case pathErrNoOnePublishing:
 				return &base.Response{
@@ -336,7 +258,7 @@ func (s *rtspSession) onSetup(c *rtspConn, ctx *gortsplib.ServerHandlerOnSetupCt
 }
 
 // onPlay is called by rtspServer.
-func (s *rtspSession) onPlay(ctx *gortsplib.ServerHandlerOnPlayCtx) (*base.Response, error) {
+func (s *rtspSession) onPlay(_ *gortsplib.ServerHandlerOnPlayCtx) (*base.Response, error) {
 	h := make(base.Header)
 
 	if s.session.State() == gortsplib.ServerSessionStatePrePlay {
@@ -354,8 +276,8 @@ func (s *rtspSession) onPlay(ctx *gortsplib.ServerHandlerOnPlayCtx) (*base.Respo
 				pathConf.RunOnRead,
 				pathConf.RunOnReadRestart,
 				s.path.externalCmdEnv(),
-				func(co int) {
-					s.Log(logger.Info, "runOnRead command exited with code %d", co)
+				func(err error) {
+					s.Log(logger.Info, "runOnRead command exited: %v", err)
 				})
 		}
 
@@ -392,10 +314,11 @@ func (s *rtspSession) onRecord(ctx *gortsplib.ServerHandlerOnRecordCtx) (*base.R
 
 	for _, medi := range s.session.AnnouncedMedias() {
 		for _, forma := range medi.Formats {
-			writeFunc := getRTSPWriteFunc(medi, forma, s.stream)
+			cmedi := medi
+			cforma := forma
 
-			ctx.Session.OnPacketRTP(medi, forma, func(pkt *rtp.Packet) {
-				writeFunc(pkt)
+			ctx.Session.OnPacketRTP(cmedi, cforma, func(pkt *rtp.Packet) {
+				res.stream.writeRTPPacket(cmedi, cforma, pkt, time.Now())
 			})
 		}
 	}
@@ -410,7 +333,7 @@ func (s *rtspSession) onRecord(ctx *gortsplib.ServerHandlerOnRecordCtx) (*base.R
 }
 
 // onPause is called by rtspServer.
-func (s *rtspSession) onPause(ctx *gortsplib.ServerHandlerOnPauseCtx) (*base.Response, error) {
+func (s *rtspSession) onPause(_ *gortsplib.ServerHandlerOnPauseCtx) (*base.Response, error) {
 	switch s.session.State() {
 	case gortsplib.ServerSessionStatePlay:
 		if s.onReadCmd != nil {
@@ -436,33 +359,21 @@ func (s *rtspSession) onPause(ctx *gortsplib.ServerHandlerOnPauseCtx) (*base.Res
 }
 
 // apiReaderDescribe implements reader.
-func (s *rtspSession) apiReaderDescribe() interface{} {
-	var typ string
-	if s.isTLS {
-		typ = "rtspsSession"
-	} else {
-		typ = "rtspSession"
+func (s *rtspSession) apiReaderDescribe() pathAPISourceOrReader {
+	return pathAPISourceOrReader{
+		Type: func() string {
+			if s.isTLS {
+				return "rtspsSession"
+			}
+			return "rtspSession"
+		}(),
+		ID: s.uuid.String(),
 	}
-
-	return struct {
-		Type string `json:"type"`
-		ID   string `json:"id"`
-	}{typ, s.uuid.String()}
 }
 
 // apiSourceDescribe implements source.
-func (s *rtspSession) apiSourceDescribe() interface{} {
-	var typ string
-	if s.isTLS {
-		typ = "rtspsSession"
-	} else {
-		typ = "rtspSession"
-	}
-
-	return struct {
-		Type string `json:"type"`
-		ID   string `json:"id"`
-	}{typ, s.uuid.String()}
+func (s *rtspSession) apiSourceDescribe() pathAPISourceOrReader {
+	return s.apiReaderDescribe()
 }
 
 // onPacketLost is called by rtspServer.
@@ -473,4 +384,26 @@ func (s *rtspSession) onPacketLost(ctx *gortsplib.ServerHandlerOnPacketLostCtx) 
 // onDecodeError is called by rtspServer.
 func (s *rtspSession) onDecodeError(ctx *gortsplib.ServerHandlerOnDecodeErrorCtx) {
 	s.Log(logger.Warn, ctx.Error.Error())
+}
+
+func (s *rtspSession) apiItem() *apiRTSPSession {
+	return &apiRTSPSession{
+		ID:         s.uuid,
+		Created:    s.created,
+		RemoteAddr: s.remoteAddr().String(),
+		State: func() string {
+			switch s.safeState() {
+			case gortsplib.ServerSessionStatePrePlay,
+				gortsplib.ServerSessionStatePlay:
+				return "read"
+
+			case gortsplib.ServerSessionStatePreRecord,
+				gortsplib.ServerSessionStateRecord:
+				return "publish"
+			}
+			return "idle"
+		}(),
+		BytesReceived: s.session.BytesReceived(),
+		BytesSent:     s.session.BytesSent(),
+	}
 }

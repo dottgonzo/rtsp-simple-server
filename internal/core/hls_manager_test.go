@@ -3,7 +3,6 @@ package core
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -25,11 +24,9 @@ type testHTTPAuthenticator struct {
 	s *http.Server
 }
 
-func newTestHTTPAuthenticator(protocol string, action string) (*testHTTPAuthenticator, error) {
+func newTestHTTPAuthenticator(t *testing.T, protocol string, action string) *testHTTPAuthenticator {
 	ln, err := net.Listen("tcp", "127.0.0.1:9120")
-	if err != nil {
-		return nil, err
-	}
+	require.NoError(t, err)
 
 	ts := &testHTTPAuthenticator{
 		protocol: protocol,
@@ -42,7 +39,7 @@ func newTestHTTPAuthenticator(protocol string, action string) (*testHTTPAuthenti
 	ts.s = &http.Server{Handler: router}
 	go ts.s.Serve(ln)
 
-	return ts, nil
+	return ts
 }
 
 func (ts *testHTTPAuthenticator) close() {
@@ -56,6 +53,7 @@ func (ts *testHTTPAuthenticator) onAuth(ctx *gin.Context) {
 		Password string `json:"password"`
 		Path     string `json:"path"`
 		Protocol string `json:"protocol"`
+		ID       string `json:"id"`
 		Action   string `json:"action"`
 		Query    string `json:"query"`
 	}
@@ -77,6 +75,7 @@ func (ts *testHTTPAuthenticator) onAuth(ctx *gin.Context) {
 		in.Password != "testpass" ||
 		in.Path != "teststream" ||
 		in.Protocol != ts.protocol ||
+		in.ID == "" ||
 		in.Action != ts.action ||
 		(in.Query != "user=testreader&pass=testpass&param=value" &&
 			in.Query != "user=testpublisher&pass=testpass&param=value" &&
@@ -86,21 +85,22 @@ func (ts *testHTTPAuthenticator) onAuth(ctx *gin.Context) {
 	}
 }
 
-func httpPullFile(u string) ([]byte, error) {
-	res, err := http.Get(u)
-	if err != nil {
-		return nil, err
-	}
+func httpPullFile(t *testing.T, hc *http.Client, u string) []byte {
+	res, err := hc.Get(u)
+	require.NoError(t, err)
 	defer res.Body.Close()
 
 	if res.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("bad status code: %v", res.StatusCode)
+		t.Errorf("bad status code: %v", res.StatusCode)
 	}
 
-	return io.ReadAll(res.Body)
+	byts, err := io.ReadAll(res.Body)
+	require.NoError(t, err)
+
+	return byts
 }
 
-func TestHLSServerNotFound(t *testing.T) {
+func TestHLSReadNotFound(t *testing.T) {
 	p, ok := newInstance("")
 	require.Equal(t, true, ok)
 	defer p.Close()
@@ -108,13 +108,15 @@ func TestHLSServerNotFound(t *testing.T) {
 	req, err := http.NewRequest(http.MethodGet, "http://127.0.0.1:8888/stream/", nil)
 	require.NoError(t, err)
 
-	res, err := http.DefaultClient.Do(req)
+	hc := &http.Client{Transport: &http.Transport{}}
+
+	res, err := hc.Do(req)
 	require.NoError(t, err)
 	defer res.Body.Close()
 	require.Equal(t, http.StatusNotFound, res.StatusCode)
 }
 
-func TestHLSServer(t *testing.T) {
+func TestHLSRead(t *testing.T) {
 	p, ok := newInstance("hlsAlwaysRemux: yes\n" +
 		"paths:\n" +
 		"  all:\n")
@@ -161,8 +163,9 @@ func TestHLSServer(t *testing.T) {
 		})
 	}
 
-	cnt, err := httpPullFile("http://localhost:8888/stream/index.m3u8")
-	require.NoError(t, err)
+	hc := &http.Client{Transport: &http.Transport{}}
+
+	cnt := httpPullFile(t, hc, "http://localhost:8888/stream/index.m3u8")
 	require.Equal(t, "#EXTM3U\n"+
 		"#EXT-X-VERSION:9\n"+
 		"#EXT-X-INDEPENDENT-SEGMENTS\n"+
@@ -171,8 +174,7 @@ func TestHLSServer(t *testing.T) {
 		"CODECS=\"avc1.42c028\",RESOLUTION=1920x1080,FRAME-RATE=30.000\n"+
 		"stream.m3u8\n", string(cnt))
 
-	cnt, err = httpPullFile("http://localhost:8888/stream/stream.m3u8")
-	require.NoError(t, err)
+	cnt = httpPullFile(t, hc, "http://localhost:8888/stream/stream.m3u8")
 	require.Regexp(t, "#EXTM3U\n"+
 		"#EXT-X-VERSION:9\n"+
 		"#EXT-X-TARGETDURATION:1\n"+

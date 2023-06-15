@@ -4,6 +4,7 @@ package conf
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -14,10 +15,10 @@ import (
 	"github.com/bluenviron/gortsplib/v3"
 	"github.com/bluenviron/gortsplib/v3/pkg/headers"
 
-	"github.com/aler9/mediamtx/internal/conf/decrypt"
-	"github.com/aler9/mediamtx/internal/conf/env"
-	"github.com/aler9/mediamtx/internal/conf/yaml"
-	"github.com/aler9/mediamtx/internal/logger"
+	"github.com/bluenviron/mediamtx/internal/conf/decrypt"
+	"github.com/bluenviron/mediamtx/internal/conf/env"
+	"github.com/bluenviron/mediamtx/internal/conf/yaml"
+	"github.com/bluenviron/mediamtx/internal/logger"
 )
 
 func getSortedKeys(paths map[string]*PathConf) []string {
@@ -43,7 +44,7 @@ func loadFromFile(fpath string, conf *Conf) (bool, error) {
 	// mediamtx.yml is optional
 	// other configuration files are not
 	if fpath == "mediamtx.yml" || fpath == "rtsp-simple-server.yml" {
-		if _, err := os.Stat(fpath); err != nil {
+		if _, err := os.Stat(fpath); errors.Is(err, os.ErrNotExist) {
 			conf.UnmarshalJSON(nil) // load defaults
 			return false, nil
 		}
@@ -195,6 +196,15 @@ func (conf Conf) Clone() *Conf {
 	return &dest
 }
 
+func contains(list []headers.AuthMethod, item headers.AuthMethod) bool {
+	for _, i := range list {
+		if i == item {
+			return true
+		}
+	}
+	return false
+}
+
 // Check checks the configuration for errors.
 func (conf *Conf) Check() error {
 	// general
@@ -209,6 +219,10 @@ func (conf *Conf) Check() error {
 			!strings.HasPrefix(conf.ExternalAuthenticationURL, "https://") {
 			return fmt.Errorf("'externalAuthenticationURL' must be a HTTP URL")
 		}
+
+		if contains(conf.AuthMethods, headers.AuthDigest) {
+			return fmt.Errorf("'externalAuthenticationURL' can't be used when 'digest' is in authMethods")
+		}
 	}
 
 	// RTSP
@@ -216,9 +230,17 @@ func (conf *Conf) Check() error {
 		if _, ok := conf.Protocols[Protocol(gortsplib.TransportUDP)]; ok {
 			return fmt.Errorf("strict encryption can't be used with the UDP transport protocol")
 		}
-
 		if _, ok := conf.Protocols[Protocol(gortsplib.TransportUDPMulticast)]; ok {
 			return fmt.Errorf("strict encryption can't be used with the UDP-multicast transport protocol")
+		}
+	}
+
+	// WebRTC
+	for _, server := range conf.WebRTCICEServers {
+		if !strings.HasPrefix(server, "stun:") &&
+			!strings.HasPrefix(server, "turn:") &&
+			!strings.HasPrefix(server, "turns:") {
+			return fmt.Errorf("invalid ICE server: '%s'", server)
 		}
 	}
 
@@ -280,7 +302,7 @@ func (conf *Conf) UnmarshalJSON(b []byte) error {
 	conf.MulticastRTCPPort = 8003
 	conf.ServerKey = "server.key"
 	conf.ServerCert = "server.crt"
-	conf.AuthMethods = AuthMethods{headers.AuthBasic, headers.AuthDigest}
+	conf.AuthMethods = AuthMethods{headers.AuthBasic}
 
 	// RTMP
 	conf.RTMPAddress = ":1935"
