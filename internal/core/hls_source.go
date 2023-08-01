@@ -2,12 +2,7 @@ package core
 
 import (
 	"context"
-	"crypto/sha256"
-	"crypto/tls"
-	"encoding/hex"
-	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/bluenviron/gohlslib"
@@ -18,6 +13,7 @@ import (
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/formatprocessor"
 	"github.com/bluenviron/mediamtx/internal/logger"
+	"github.com/bluenviron/mediamtx/internal/stream"
 )
 
 type hlsSourceParent interface {
@@ -44,7 +40,7 @@ func (s *hlsSource) Log(level logger.Level, format string, args ...interface{}) 
 
 // run implements sourceStaticImpl.
 func (s *hlsSource) run(ctx context.Context, cnf *conf.PathConf, reloadConf chan *conf.PathConf) error {
-	var stream *stream
+	var stream *stream.Stream
 
 	defer func() {
 		if stream != nil {
@@ -52,35 +48,24 @@ func (s *hlsSource) run(ctx context.Context, cnf *conf.PathConf, reloadConf chan
 		}
 	}()
 
-	var tlsConfig *tls.Config
-	if cnf.SourceFingerprint != "" {
-		tlsConfig = &tls.Config{
-			InsecureSkipVerify: true,
-			VerifyConnection: func(cs tls.ConnectionState) error {
-				h := sha256.New()
-				h.Write(cs.PeerCertificates[0].Raw)
-				hstr := hex.EncodeToString(h.Sum(nil))
-				fingerprintLower := strings.ToLower(cnf.SourceFingerprint)
-
-				if hstr != fingerprintLower {
-					return fmt.Errorf("server fingerprint do not match: expected %s, got %s",
-						fingerprintLower, hstr)
-				}
-
-				return nil
-			},
-		}
-	}
-
 	c := &gohlslib.Client{
 		URI: cnf.Source,
 		HTTPClient: &http.Client{
 			Transport: &http.Transport{
-				TLSClientConfig: tlsConfig,
+				TLSClientConfig: tlsConfigForFingerprint(cnf.SourceFingerprint),
 			},
 		},
-		Log: func(level gohlslib.LogLevel, format string, args ...interface{}) {
-			s.Log(logger.Level(level), format, args...)
+		OnDownloadPrimaryPlaylist: func(u string) {
+			s.Log(logger.Debug, "downloading primary playlist %u", u)
+		},
+		OnDownloadStreamPlaylist: func(u string) {
+			s.Log(logger.Debug, "downloading stream playlist %u", u)
+		},
+		OnDownloadSegment: func(u string) {
+			s.Log(logger.Debug, "downloading segment %u", u)
+		},
+		OnDecodeError: func(err error) {
+			s.Log(logger.Warn, err.Error())
 		},
 	}
 
@@ -102,11 +87,13 @@ func (s *hlsSource) run(ctx context.Context, cnf *conf.PathConf, reloadConf chan
 					}},
 				}
 
-				c.OnData(track, func(pts time.Duration, unit interface{}) {
-					stream.writeUnit(medi, medi.Formats[0], &formatprocessor.UnitH264{
+				c.OnDataH26x(track, func(pts time.Duration, dts time.Duration, au [][]byte) {
+					stream.WriteUnit(medi, medi.Formats[0], &formatprocessor.UnitH264{
+						BaseUnit: formatprocessor.BaseUnit{
+							NTP: time.Now(),
+						},
 						PTS: pts,
-						AU:  unit.([][]byte),
-						NTP: time.Now(),
+						AU:  au,
 					})
 				})
 
@@ -121,11 +108,13 @@ func (s *hlsSource) run(ctx context.Context, cnf *conf.PathConf, reloadConf chan
 					}},
 				}
 
-				c.OnData(track, func(pts time.Duration, unit interface{}) {
-					stream.writeUnit(medi, medi.Formats[0], &formatprocessor.UnitH265{
+				c.OnDataH26x(track, func(pts time.Duration, dts time.Duration, au [][]byte) {
+					stream.WriteUnit(medi, medi.Formats[0], &formatprocessor.UnitH265{
+						BaseUnit: formatprocessor.BaseUnit{
+							NTP: time.Now(),
+						},
 						PTS: pts,
-						AU:  unit.([][]byte),
-						NTP: time.Now(),
+						AU:  au,
 					})
 				})
 
@@ -141,11 +130,13 @@ func (s *hlsSource) run(ctx context.Context, cnf *conf.PathConf, reloadConf chan
 					}},
 				}
 
-				c.OnData(track, func(pts time.Duration, unit interface{}) {
-					stream.writeUnit(medi, medi.Formats[0], &formatprocessor.UnitMPEG4AudioGeneric{
+				c.OnDataMPEG4Audio(track, func(pts time.Duration, dts time.Duration, aus [][]byte) {
+					stream.WriteUnit(medi, medi.Formats[0], &formatprocessor.UnitMPEG4AudioGeneric{
+						BaseUnit: formatprocessor.BaseUnit{
+							NTP: time.Now(),
+						},
 						PTS: pts,
-						AUs: [][]byte{unit.([]byte)},
-						NTP: time.Now(),
+						AUs: aus,
 					})
 				})
 
@@ -158,11 +149,13 @@ func (s *hlsSource) run(ctx context.Context, cnf *conf.PathConf, reloadConf chan
 					}},
 				}
 
-				c.OnData(track, func(pts time.Duration, unit interface{}) {
-					stream.writeUnit(medi, medi.Formats[0], &formatprocessor.UnitOpus{
-						PTS:   pts,
-						Frame: unit.([]byte),
-						NTP:   time.Now(),
+				c.OnDataOpus(track, func(pts time.Duration, dts time.Duration, packets [][]byte) {
+					stream.WriteUnit(medi, medi.Formats[0], &formatprocessor.UnitOpus{
+						BaseUnit: formatprocessor.BaseUnit{
+							NTP: time.Now(),
+						},
+						PTS:     pts,
+						Packets: packets,
 					})
 				})
 			}

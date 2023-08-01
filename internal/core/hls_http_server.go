@@ -7,11 +7,17 @@ import (
 	"net/http"
 	gopath "path"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/bluenviron/mediamtx/internal/conf"
+	"github.com/bluenviron/mediamtx/internal/httpserv"
 	"github.com/bluenviron/mediamtx/internal/logger"
+)
+
+const (
+	hlsPauseAfterAuthError = 2 * time.Second
 )
 
 //go:embed hls_index.html
@@ -27,7 +33,7 @@ type hlsHTTPServer struct {
 	pathManager *pathManager
 	parent      hlsHTTPServerParent
 
-	inner *httpServer
+	inner *httpserv.WrappedServer
 }
 
 func newHLSHTTPServer( //nolint:dupl
@@ -57,12 +63,15 @@ func newHLSHTTPServer( //nolint:dupl
 	}
 
 	router := gin.New()
-	httpSetTrustedProxies(router, trustedProxies)
+	router.SetTrustedProxies(trustedProxies.ToTrustedProxies())
 
-	router.NoRoute(httpLoggerMiddleware(s), httpServerHeaderMiddleware, s.onRequest)
+	router.NoRoute(httpserv.MiddlewareLogger(s), httpserv.MiddlewareServerHeader, s.onRequest)
+
+	network, address := restrictNetwork("tcp", address)
 
 	var err error
-	s.inner, err = newHTTPServer(
+	s.inner, err = httpserv.NewWrappedServer(
+		network,
 		address,
 		readTimeout,
 		serverCert,
@@ -81,7 +90,7 @@ func (s *hlsHTTPServer) Log(level logger.Level, format string, args ...interface
 }
 
 func (s *hlsHTTPServer) close() {
-	s.inner.close()
+	s.inner.Close()
 }
 
 func (s *hlsHTTPServer) onRequest(ctx *gin.Context) {
@@ -89,13 +98,13 @@ func (s *hlsHTTPServer) onRequest(ctx *gin.Context) {
 	ctx.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
 
 	switch ctx.Request.Method {
-	case http.MethodGet:
-
 	case http.MethodOptions:
 		ctx.Writer.Header().Set("Access-Control-Allow-Methods", "OPTIONS, GET")
-		ctx.Writer.Header().Set("Access-Control-Allow-Headers", ctx.Request.Header.Get("Access-Control-Request-Headers"))
+		ctx.Writer.Header().Set("Access-Control-Allow-Headers", "Authorization, Range")
 		ctx.Writer.WriteHeader(http.StatusOK)
 		return
+
+	case http.MethodGet:
 
 	default:
 		return
@@ -125,7 +134,11 @@ func (s *hlsHTTPServer) onRequest(ctx *gin.Context) {
 		dir, fname = pa, ""
 
 		if !strings.HasSuffix(dir, "/") {
-			ctx.Writer.Header().Set("Location", "/"+dir+"/")
+			l := "/" + dir + "/"
+			if ctx.Request.URL.RawQuery != "" {
+				l += "?" + ctx.Request.URL.RawQuery
+			}
+			ctx.Writer.Header().Set("Location", l)
 			ctx.Writer.WriteHeader(http.StatusMovedPermanently)
 			return
 		}
@@ -138,7 +151,7 @@ func (s *hlsHTTPServer) onRequest(ctx *gin.Context) {
 
 	user, pass, hasCredentials := ctx.Request.BasicAuth()
 
-	res := s.pathManager.getPathConf(pathGetPathConfReq{
+	res := s.pathManager.getConfForPath(pathGetConfForPathReq{
 		name:    dir,
 		publish: false,
 		credentials: authCredentials{
@@ -150,14 +163,22 @@ func (s *hlsHTTPServer) onRequest(ctx *gin.Context) {
 		},
 	})
 	if res.err != nil {
-		if terr, ok := res.err.(pathErrAuth); ok {
+		if terr, ok := res.err.(*errAuthentication); ok {
 			if !hasCredentials {
 				ctx.Header("WWW-Authenticate", `Basic realm="mediamtx"`)
 				ctx.Writer.WriteHeader(http.StatusUnauthorized)
 				return
 			}
 
-			s.Log(logger.Info, "authentication error: %v", terr.wrapped)
+			ip := ctx.ClientIP()
+			_, port, _ := net.SplitHostPort(ctx.Request.RemoteAddr)
+			remoteAddr := net.JoinHostPort(ip, port)
+
+			s.Log(logger.Info, "connection %v failed to authenticate: %v", remoteAddr, terr.message)
+
+			// wait some seconds to stop brute force attacks
+			<-time.After(hlsPauseAfterAuthError)
+
 			ctx.Writer.WriteHeader(http.StatusUnauthorized)
 			return
 		}

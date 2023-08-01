@@ -56,7 +56,7 @@ pprofAddress: 127.0.0.1:9999
 # Prepend ./ to run an executable in the current folder (example: "./ffmpeg")
 # This is terminated with SIGINT when a client disconnects from the server.
 # The following environment variables are available:
-# * RTSP_PORT: server port
+# * RTSP_PORT: RTSP server port
 runOnConnect:
 # Restart the command if it exits.
 runOnConnectRestart: no
@@ -200,15 +200,18 @@ webrtcAllowOrigin: '*'
 # If the server receives a request from one of these entries, IP in logs
 # will be taken from the X-Forwarded-For header.
 webrtcTrustedProxies: []
-# List of ICE servers, in format type:user:password:host:port or type:host:port.
-# type can be "stun", "turn" or "turns".
-# STUN servers are used to obtain the public IP of server and clients. They are
-# needed when server and clients are on different LANs.
-# TURN servers are needed when a direct connection between server and clients
-# is not possible. All traffic is routed through the chosen TURN server.
-# if user is "AUTH_SECRET", then authentication is secret based.
-# the secret must be inserted into the password field.
-webrtcICEServers: [stun:stun.l.google.com:19302]
+# List of ICE servers.
+webrtcICEServers2:
+  # URL can point to a STUN, TURN or TURNS server.
+  # STUN servers are used to obtain the public IP of server and clients. They are
+  # needed when server and clients are on different LANs.
+  # TURN/TURNS servers are needed when a direct connection between server and
+  # clients is not possible. All traffic is routed through them.
+- url: stun:stun.l.google.com:19302
+  # if user is "AUTH_SECRET", then authentication is secret based.
+  # the secret must be inserted into the password field.
+  username: ''
+  password: ''
 # List of public IP addresses that are to be used as a host.
 # This is used typically for servers that are behind 1:1 D-NAT.
 webrtcICEHostNAT1To1IPs: []
@@ -224,25 +227,34 @@ webrtcICEUDPMuxAddress:
 webrtcICETCPMuxAddress:
 
 ###############################################
+# SRT parameters
+
+# Enables support for the SRT protocol.
+srt: yes
+# Address of the SRT listener.
+srtAddress: :8890
+
+###############################################
 # Path parameters
 
 # These settings are path-dependent, and the map key is the name of the path.
-# It's possible to use regular expressions by using a tilde as prefix.
-# For example, "~^(test1|test2)$" will match both "test1" and "test2".
-# For example, "~^prefix" will match all paths that start with "prefix".
-# The settings under the path "all" are applied to all paths that do not match
+# It's possible to use regular expressions by using a tilde as prefix,
+# for example "~^(test1|test2)$" will match both "test1" and "test2",
+# for example "~^prefix" will match all paths that start with "prefix".
+# Settings under the path "all" are applied to all paths that do not match
 # another entry.
 paths:
   all:
     # Source of the stream. This can be:
-    # * publisher -> the stream is published by a RTSP or RTMP client
+    # * publisher -> the stream is published by a RTSP, RTMP, WebRTC or SRT client
     # * rtsp://existing-url -> the stream is pulled from another RTSP server / camera
     # * rtsps://existing-url -> the stream is pulled from another RTSP server / camera with RTSPS
     # * rtmp://existing-url -> the stream is pulled from another RTMP server / camera
     # * rtmps://existing-url -> the stream is pulled from another RTMP server / camera with RTMPS
     # * http://existing-url/stream.m3u8 -> the stream is pulled from another HLS server
     # * https://existing-url/stream.m3u8 -> the stream is pulled from another HLS server with HTTPS
-    # * udp://ip:port -> the stream is pulled from UDP, by listening on the specified IP and port
+    # * udp://ip:port -> the stream is pulled with UDP, by listening on the specified IP and port
+    # * srt://existing-url -> the stream is pulled from another SRT server
     # * redirect -> the stream is provided by another path or server
     # * rpiCamera -> the stream is provided by a Raspberry Pi Camera
     source: publisher
@@ -363,6 +375,8 @@ paths:
     rpiCameraEV: 0
     # Region of interest, in format x,y,width,height
     rpiCameraROI:
+    # whether to enable HDR on Raspberry Camera 3.
+    rpiCameraHDR: false
     # tuning file
     rpiCameraTuningFile:
     # sensor mode, in format [width]:[height]:[bit-depth]:[packing]
@@ -410,8 +424,8 @@ paths:
     # Prepend ./ to run an executable in the current folder (example: "./ffmpeg")
     # This is terminated with SIGINT when the program closes.
     # The following environment variables are available:
-    # * RTSP_PATH: path name
-    # * RTSP_PORT: server port
+    # * MTX_PATH: path name
+    # * RTSP_PORT: RTSP server port
     # * G1, G2, ...: regular expression groups, if path name is
     #   a regular expression.
     runOnInit:
@@ -423,8 +437,8 @@ paths:
     # Prepend ./ to run an executable in the current folder (example: "./ffmpeg")
     # This is terminated with SIGINT when the path is not requested anymore.
     # The following environment variables are available:
-    # * RTSP_PATH: path name
-    # * RTSP_PORT: server port
+    # * MTX_PATH: path name
+    # * RTSP_PORT: RTSP server port
     # * G1, G2, ...: regular expression groups, if path name is
     #   a regular expression.
     runOnDemand:
@@ -442,8 +456,8 @@ paths:
     # Prepend ./ to run an executable in the current folder (example: "./ffmpeg")
     # This is terminated with SIGINT when the stream is not ready anymore.
     # The following environment variables are available:
-    # * RTSP_PATH: path name
-    # * RTSP_PORT: server port
+    # * MTX_PATH: path name
+    # * RTSP_PORT: RTSP server port
     # * G1, G2, ...: regular expression groups, if path name is
     #   a regular expression.
     runOnReady:
@@ -454,8 +468,8 @@ paths:
     # Prepend ./ to run an executable in the current folder (example: "./ffmpeg")
     # This is terminated with SIGINT when a client stops reading.
     # The following environment variables are available:
-    # * RTSP_PATH: path name
-    # * RTSP_PORT: server port
+    # * MTX_PATH: path name
+    # * RTSP_PORT: RTSP server port
     # * G1, G2, ...: regular expression groups, if path name is
     #   a regular expression.
     runOnRead:

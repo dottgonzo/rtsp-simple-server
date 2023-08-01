@@ -14,7 +14,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/bluenviron/mediamtx/internal/rtmp"
-	"github.com/bluenviron/mediamtx/internal/rtmp/message"
 )
 
 func TestRTMPSource(t *testing.T) {
@@ -53,9 +52,8 @@ func TestRTMPSource(t *testing.T) {
 				nconn, err := ln.Accept()
 				require.NoError(t, err)
 				defer nconn.Close()
-				conn := rtmp.NewConn(nconn)
 
-				_, _, err = conn.InitializeServer()
+				conn, _, _, err := rtmp.NewServerConn(nconn)
 				require.NoError(t, err)
 
 				videoTrack := &formats.H264{
@@ -81,19 +79,12 @@ func TestRTMPSource(t *testing.T) {
 					IndexDeltaLength: 3,
 				}
 
-				err = conn.WriteTracks(videoTrack, audioTrack)
+				w, err := rtmp.NewWriter(conn, videoTrack, audioTrack)
 				require.NoError(t, err)
 
 				<-connected
 
-				err = conn.WriteMessage(&message.Video{
-					ChunkStreamID:   message.VideoChunkStreamID,
-					MessageStreamID: 0x1000000,
-					Codec:           message.CodecH264,
-					IsKeyFrame:      true,
-					Type:            message.VideoTypeAU,
-					Payload:         []byte{0x00, 0x00, 0x00, 0x04, 0x05, 0x02, 0x03, 0x04},
-				})
+				err = w.WriteH264(0, 0, true, [][]byte{{0x05, 0x02, 0x03, 0x04}})
 				require.NoError(t, err)
 
 				<-done

@@ -77,6 +77,15 @@ func loadFromFile(fpath string, conf *Conf) (bool, error) {
 	return true, nil
 }
 
+func contains(list []headers.AuthMethod, item headers.AuthMethod) bool {
+	for _, i := range list {
+		if i == item {
+			return true
+		}
+	}
+	return false
+}
+
 // Conf is a configuration.
 type Conf struct {
 	// general
@@ -137,17 +146,22 @@ type Conf struct {
 	HLSDirectory       string         `json:"hlsDirectory"`
 
 	// WebRTC
-	WebRTCDisable           bool       `json:"webrtcDisable"`
-	WebRTCAddress           string     `json:"webrtcAddress"`
-	WebRTCEncryption        bool       `json:"webrtcEncryption"`
-	WebRTCServerKey         string     `json:"webrtcServerKey"`
-	WebRTCServerCert        string     `json:"webrtcServerCert"`
-	WebRTCAllowOrigin       string     `json:"webrtcAllowOrigin"`
-	WebRTCTrustedProxies    IPsOrCIDRs `json:"webrtcTrustedProxies"`
-	WebRTCICEServers        []string   `json:"webrtcICEServers"`
-	WebRTCICEHostNAT1To1IPs []string   `json:"webrtcICEHostNAT1To1IPs"`
-	WebRTCICEUDPMuxAddress  string     `json:"webrtcICEUDPMuxAddress"`
-	WebRTCICETCPMuxAddress  string     `json:"webrtcICETCPMuxAddress"`
+	WebRTCDisable           bool              `json:"webrtcDisable"`
+	WebRTCAddress           string            `json:"webrtcAddress"`
+	WebRTCEncryption        bool              `json:"webrtcEncryption"`
+	WebRTCServerKey         string            `json:"webrtcServerKey"`
+	WebRTCServerCert        string            `json:"webrtcServerCert"`
+	WebRTCAllowOrigin       string            `json:"webrtcAllowOrigin"`
+	WebRTCTrustedProxies    IPsOrCIDRs        `json:"webrtcTrustedProxies"`
+	WebRTCICEServers        []string          `json:"webrtcICEServers"` // deprecated
+	WebRTCICEServers2       []WebRTCICEServer `json:"webrtcICEServers2"`
+	WebRTCICEHostNAT1To1IPs []string          `json:"webrtcICEHostNAT1To1IPs"`
+	WebRTCICEUDPMuxAddress  string            `json:"webrtcICEUDPMuxAddress"`
+	WebRTCICETCPMuxAddress  string            `json:"webrtcICETCPMuxAddress"`
+
+	// SRT
+	SRT        bool   `json:"srt"`
+	SRTAddress string `json:"srtAddress"`
 
 	// paths
 	Paths map[string]*PathConf `json:"paths"`
@@ -196,15 +210,6 @@ func (conf Conf) Clone() *Conf {
 	return &dest
 }
 
-func contains(list []headers.AuthMethod, item headers.AuthMethod) bool {
-	for _, i := range list {
-		if i == item {
-			return true
-		}
-	}
-	return false
-}
-
 // Check checks the configuration for errors.
 func (conf *Conf) Check() error {
 	// general
@@ -237,10 +242,25 @@ func (conf *Conf) Check() error {
 
 	// WebRTC
 	for _, server := range conf.WebRTCICEServers {
-		if !strings.HasPrefix(server, "stun:") &&
-			!strings.HasPrefix(server, "turn:") &&
-			!strings.HasPrefix(server, "turns:") {
-			return fmt.Errorf("invalid ICE server: '%s'", server)
+		parts := strings.Split(server, ":")
+		if len(parts) == 5 {
+			conf.WebRTCICEServers2 = append(conf.WebRTCICEServers2, WebRTCICEServer{
+				URL:      parts[0] + ":" + parts[3] + ":" + parts[4],
+				Username: parts[1],
+				Password: parts[2],
+			})
+		} else {
+			conf.WebRTCICEServers2 = append(conf.WebRTCICEServers2, WebRTCICEServer{
+				URL: server,
+			})
+		}
+	}
+	conf.WebRTCICEServers = nil
+	for _, server := range conf.WebRTCICEServers2 {
+		if !strings.HasPrefix(server.URL, "stun:") &&
+			!strings.HasPrefix(server.URL, "turn:") &&
+			!strings.HasPrefix(server.URL, "turns:") {
+			return fmt.Errorf("invalid ICE server: '%s'", server.URL)
 		}
 	}
 
@@ -248,12 +268,6 @@ func (conf *Conf) Check() error {
 	// initialize all paths through API or hot reloading.
 	if conf.Paths == nil {
 		conf.Paths = make(map[string]*PathConf)
-	}
-
-	// "all" is an alias for "~^.*$"
-	if _, ok := conf.Paths["all"]; ok {
-		conf.Paths["~^.*$"] = conf.Paths["all"]
-		delete(conf.Paths, "all")
 	}
 
 	for _, name := range getSortedKeys(conf.Paths) {
@@ -324,7 +338,11 @@ func (conf *Conf) UnmarshalJSON(b []byte) error {
 	conf.WebRTCServerKey = "server.key"
 	conf.WebRTCServerCert = "server.crt"
 	conf.WebRTCAllowOrigin = "*"
-	conf.WebRTCICEServers = []string{"stun:stun.l.google.com:19302"}
+	conf.WebRTCICEServers2 = []WebRTCICEServer{{URL: "stun:stun.l.google.com:19302"}}
+
+	// SRT
+	conf.SRT = true
+	conf.SRTAddress = ":8890"
 
 	type alias Conf
 	d := json.NewDecoder(bytes.NewReader(b))

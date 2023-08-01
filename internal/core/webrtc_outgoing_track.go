@@ -15,6 +15,7 @@ import (
 	"github.com/pion/webrtc/v3"
 
 	"github.com/bluenviron/mediamtx/internal/formatprocessor"
+	"github.com/bluenviron/mediamtx/internal/stream"
 )
 
 type webRTCOutgoingTrack struct {
@@ -61,7 +62,7 @@ func newWebRTCOutgoingTrackVideo(medias media.Medias) (*webRTCOutgoingTrack, err
 
 				packets, err := encoder.Encode(tunit.OBUs, tunit.PTS)
 				if err != nil {
-					return nil
+					return nil //nolint:nilerr
 				}
 
 				for _, pkt := range packets {
@@ -108,7 +109,7 @@ func newWebRTCOutgoingTrackVideo(medias media.Medias) (*webRTCOutgoingTrack, err
 
 				packets, err := encoder.Encode(tunit.Frame, tunit.PTS)
 				if err != nil {
-					return nil
+					return nil //nolint:nilerr
 				}
 
 				for _, pkt := range packets {
@@ -155,7 +156,7 @@ func newWebRTCOutgoingTrackVideo(medias media.Medias) (*webRTCOutgoingTrack, err
 
 				packets, err := encoder.Encode(tunit.Frame, tunit.PTS)
 				if err != nil {
-					return nil
+					return nil //nolint:nilerr
 				}
 
 				for _, pkt := range packets {
@@ -215,7 +216,7 @@ func newWebRTCOutgoingTrackVideo(medias media.Medias) (*webRTCOutgoingTrack, err
 
 				packets, err := encoder.Encode(tunit.AU, tunit.PTS)
 				if err != nil {
-					return nil
+					return nil //nolint:nilerr
 				}
 
 				for _, pkt := range packets {
@@ -335,7 +336,7 @@ func newWebRTCOutgoingTrackAudio(medias media.Medias) (*webRTCOutgoingTrack, err
 func (t *webRTCOutgoingTrack) start(
 	ctx context.Context,
 	r reader,
-	stream *stream,
+	stream *stream.Stream,
 	ringBuffer *ringbuffer.RingBuffer,
 	writeError chan error,
 ) {
@@ -350,7 +351,7 @@ func (t *webRTCOutgoingTrack) start(
 		}
 	}()
 
-	stream.readerAdd(r, t.media, t.format, func(unit formatprocessor.Unit) {
+	stream.AddReader(r, t.media, t.format, func(unit formatprocessor.Unit) {
 		ringBuffer.Push(func() {
 			err := t.cb(unit)
 			if err != nil {

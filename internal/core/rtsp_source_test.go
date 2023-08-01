@@ -43,7 +43,9 @@ func TestRTSPSource(t *testing.T) {
 		t.Run(source, func(t *testing.T) {
 			medi := testMediaH264
 			stream := gortsplib.NewServerStream(media.Medias{medi})
-			nonce := auth.GenerateNonce()
+
+			nonce, err := auth.GenerateNonce()
+			require.NoError(t, err)
 
 			s := gortsplib.Server{
 				Handler: &testServer{
@@ -51,7 +53,7 @@ func TestRTSPSource(t *testing.T) {
 					) (*base.Response, *gortsplib.ServerStream, error) {
 						err := auth.Validate(ctx.Request, "testuser", "testpass", nil, nil, "IPCAM", nonce)
 						if err != nil {
-							return &base.Response{
+							return &base.Response{ //nolint:nilerr
 								StatusCode: base.StatusUnauthorized,
 								Header: base.Header{
 									"WWW-Authenticate": auth.GenerateWWWAuthenticate(nil, "IPCAM", nonce),
@@ -112,7 +114,7 @@ func TestRTSPSource(t *testing.T) {
 				s.TLSConfig = &tls.Config{Certificates: []tls.Certificate{cert}}
 			}
 
-			err := s.Start()
+			err = s.Start()
 			require.NoError(t, err)
 			defer s.Wait()
 			defer s.Close()
@@ -167,7 +169,10 @@ func TestRTSPSource(t *testing.T) {
 
 func TestRTSPSourceNoPassword(t *testing.T) {
 	stream := gortsplib.NewServerStream(media.Medias{testMediaH264})
-	nonce := auth.GenerateNonce()
+
+	nonce, err := auth.GenerateNonce()
+	require.NoError(t, err)
+
 	done := make(chan struct{})
 
 	s := gortsplib.Server{
@@ -175,7 +180,7 @@ func TestRTSPSourceNoPassword(t *testing.T) {
 			onDescribe: func(ctx *gortsplib.ServerHandlerOnDescribeCtx) (*base.Response, *gortsplib.ServerStream, error) {
 				err := auth.Validate(ctx.Request, "testuser", "", nil, nil, "IPCAM", nonce)
 				if err != nil {
-					return &base.Response{
+					return &base.Response{ //nolint:nilerr
 						StatusCode: base.StatusUnauthorized,
 						Header: base.Header{
 							"WWW-Authenticate": auth.GenerateWWWAuthenticate(nil, "IPCAM", nonce),
@@ -201,7 +206,7 @@ func TestRTSPSourceNoPassword(t *testing.T) {
 		},
 		RTSPAddress: "127.0.0.1:8555",
 	}
-	err := s.Start()
+	err = s.Start()
 	require.NoError(t, err)
 	defer s.Wait()
 	defer s.Close()

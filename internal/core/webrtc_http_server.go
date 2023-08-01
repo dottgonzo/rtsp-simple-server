@@ -2,12 +2,15 @@ package core
 
 import (
 	_ "embed"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -15,6 +18,7 @@ import (
 	"github.com/pion/webrtc/v3"
 
 	"github.com/bluenviron/mediamtx/internal/conf"
+	"github.com/bluenviron/mediamtx/internal/httpserv"
 	"github.com/bluenviron/mediamtx/internal/logger"
 )
 
@@ -23,6 +27,59 @@ var webrtcPublishIndex []byte
 
 //go:embed webrtc_read_index.html
 var webrtcReadIndex []byte
+
+func quoteCredential(v string) string {
+	b, _ := json.Marshal(v)
+	s := string(b)
+	return s[1 : len(s)-1]
+}
+
+func unquoteCredential(v string) string {
+	var s string
+	json.Unmarshal([]byte("\""+v+"\""), &s)
+	return s
+}
+
+func iceServersToLinkHeader(iceServers []webrtc.ICEServer) []string {
+	ret := make([]string, len(iceServers))
+
+	for i, server := range iceServers {
+		link := "<" + server.URLs[0] + ">; rel=\"ice-server\""
+		if server.Username != "" {
+			link += "; username=\"" + quoteCredential(server.Username) + "\"" +
+				"; credential=\"" + quoteCredential(server.Credential.(string)) + "\"; credential-type=\"password\""
+		}
+		ret[i] = link
+	}
+
+	return ret
+}
+
+var reLink = regexp.MustCompile(`^<(.+?)>; rel="ice-server"(; username="(.+?)"` +
+	`; credential="(.+?)"; credential-type="password")?`)
+
+func linkHeaderToIceServers(link []string) []webrtc.ICEServer {
+	var ret []webrtc.ICEServer
+
+	for _, li := range link {
+		m := reLink.FindStringSubmatch(li)
+		if m != nil {
+			s := webrtc.ICEServer{
+				URLs: []string{m[1]},
+			}
+
+			if m[3] != "" {
+				s.Username = unquoteCredential(m[3])
+				s.Credential = unquoteCredential(m[4])
+				s.CredentialType = webrtc.ICECredentialTypePassword
+			}
+
+			ret = append(ret, s)
+		}
+	}
+
+	return ret
+}
 
 func unmarshalICEFragment(buf []byte) ([]*webrtc.ICECandidateInit, error) {
 	buf = append([]byte("v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\ns=-\r\nt=0 0\r\n"), buf...)
@@ -104,9 +161,9 @@ func marshalICEFragment(offer *webrtc.SessionDescription, candidates []*webrtc.I
 
 type webRTCHTTPServerParent interface {
 	logger.Writer
-	genICEServers() []webrtc.ICEServer
-	sessionNew(req webRTCSessionNewReq) webRTCSessionNewRes
-	sessionAddCandidates(req webRTCSessionAddCandidatesReq) webRTCSessionAddCandidatesRes
+	generateICEServers() ([]webrtc.ICEServer, error)
+	newSession(req webRTCNewSessionReq) webRTCNewSessionRes
+	addSessionCandidates(req webRTCAddSessionCandidatesReq) webRTCAddSessionCandidatesRes
 }
 
 type webRTCHTTPServer struct {
@@ -114,7 +171,7 @@ type webRTCHTTPServer struct {
 	pathManager *pathManager
 	parent      webRTCHTTPServerParent
 
-	inner *httpServer
+	inner *httpserv.WrappedServer
 }
 
 func newWebRTCHTTPServer( //nolint:dupl
@@ -144,11 +201,14 @@ func newWebRTCHTTPServer( //nolint:dupl
 	}
 
 	router := gin.New()
-	httpSetTrustedProxies(router, trustedProxies)
-	router.NoRoute(httpLoggerMiddleware(s), httpServerHeaderMiddleware, s.onRequest)
+	router.SetTrustedProxies(trustedProxies.ToTrustedProxies())
+	router.NoRoute(httpserv.MiddlewareLogger(s), httpserv.MiddlewareServerHeader, s.onRequest)
+
+	network, address := restrictNetwork("tcp", address)
 
 	var err error
-	s.inner, err = newHTTPServer(
+	s.inner, err = httpserv.NewWrappedServer(
+		network,
 		address,
 		readTimeout,
 		serverCert,
@@ -167,7 +227,7 @@ func (s *webRTCHTTPServer) Log(level logger.Level, format string, args ...interf
 }
 
 func (s *webRTCHTTPServer) close() {
-	s.inner.close()
+	s.inner.Close()
 }
 
 func (s *webRTCHTTPServer) onRequest(ctx *gin.Context) {
@@ -177,15 +237,19 @@ func (s *webRTCHTTPServer) onRequest(ctx *gin.Context) {
 	// remove leading prefix
 	pa := ctx.Request.URL.Path[1:]
 
-	if !strings.HasSuffix(pa, "/whip") && !strings.HasSuffix(pa, "/whep") {
-		switch ctx.Request.Method {
-		case http.MethodGet:
+	isWHIPorWHEP := strings.HasSuffix(pa, "/whip") || strings.HasSuffix(pa, "/whep")
+	isPreflight := ctx.Request.Method == http.MethodOptions &&
+		ctx.Request.Header.Get("Access-Control-Request-Method") != ""
 
+	if !isWHIPorWHEP || isPreflight {
+		switch ctx.Request.Method {
 		case http.MethodOptions:
-			ctx.Writer.Header().Set("Access-Control-Allow-Methods", "OPTIONS, GET")
-			ctx.Writer.Header().Set("Access-Control-Allow-Headers", ctx.Request.Header.Get("Access-Control-Request-Headers"))
+			ctx.Writer.Header().Set("Access-Control-Allow-Methods", "OPTIONS, GET, POST, PATCH")
+			ctx.Writer.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, If-Match")
 			ctx.Writer.WriteHeader(http.StatusOK)
 			return
+
+		case http.MethodGet:
 
 		default:
 			return
@@ -217,7 +281,11 @@ func (s *webRTCHTTPServer) onRequest(ctx *gin.Context) {
 		publish = false
 
 		if !strings.HasSuffix(dir, "/") {
-			ctx.Writer.Header().Set("Location", "/"+dir+"/")
+			l := "/" + dir + "/"
+			if ctx.Request.URL.RawQuery != "" {
+				l += "?" + ctx.Request.URL.RawQuery
+			}
+			ctx.Writer.Header().Set("Location", l)
 			ctx.Writer.WriteHeader(http.StatusMovedPermanently)
 			return
 		}
@@ -228,34 +296,44 @@ func (s *webRTCHTTPServer) onRequest(ctx *gin.Context) {
 		return
 	}
 
+	ip := ctx.ClientIP()
+	_, port, _ := net.SplitHostPort(ctx.Request.RemoteAddr)
+	remoteAddr := net.JoinHostPort(ip, port)
 	user, pass, hasCredentials := ctx.Request.BasicAuth()
 
-	res := s.pathManager.getPathConf(pathGetPathConfReq{
-		name:    dir,
-		publish: publish,
-		credentials: authCredentials{
-			query: ctx.Request.URL.RawQuery,
-			ip:    net.ParseIP(ctx.ClientIP()),
-			user:  user,
-			pass:  pass,
-			proto: authProtocolWebRTC,
-		},
-	})
-	if res.err != nil {
-		if terr, ok := res.err.(pathErrAuth); ok {
-			if !hasCredentials {
-				ctx.Header("WWW-Authenticate", `Basic realm="mediamtx"`)
+	// if request doesn't belong to a session, check authentication here
+	if !isWHIPorWHEP || ctx.Request.Method == http.MethodOptions {
+		res := s.pathManager.getConfForPath(pathGetConfForPathReq{
+			name:    dir,
+			publish: publish,
+			credentials: authCredentials{
+				query: ctx.Request.URL.RawQuery,
+				ip:    net.ParseIP(ip),
+				user:  user,
+				pass:  pass,
+				proto: authProtocolWebRTC,
+			},
+		})
+		if res.err != nil {
+			if terr, ok := res.err.(*errAuthentication); ok {
+				if !hasCredentials {
+					ctx.Header("WWW-Authenticate", `Basic realm="mediamtx"`)
+					ctx.Writer.WriteHeader(http.StatusUnauthorized)
+					return
+				}
+
+				s.Log(logger.Info, "connection %v failed to authenticate: %v", remoteAddr, terr.message)
+
+				// wait some seconds to stop brute force attacks
+				<-time.After(webrtcPauseAfterAuthError)
+
 				ctx.Writer.WriteHeader(http.StatusUnauthorized)
 				return
 			}
 
-			s.Log(logger.Info, "authentication error: %v", terr.wrapped)
-			ctx.Writer.WriteHeader(http.StatusUnauthorized)
+			ctx.Writer.WriteHeader(http.StatusNotFound)
 			return
 		}
-
-		ctx.Writer.WriteHeader(http.StatusNotFound)
-		return
 	}
 
 	switch fname {
@@ -272,9 +350,15 @@ func (s *webRTCHTTPServer) onRequest(ctx *gin.Context) {
 	case "whip", "whep":
 		switch ctx.Request.Method {
 		case http.MethodOptions:
-			ctx.Writer.Header().Set("Access-Control-Allow-Methods", "OPTIONS, POST, PATCH")
-			ctx.Writer.Header().Set("Access-Control-Allow-Headers", ctx.Request.Header.Get("Access-Control-Request-Headers"))
-			ctx.Writer.Header()["Link"] = iceServersToLinkHeader(s.parent.genICEServers())
+			servers, err := s.parent.generateICEServers()
+			if err != nil {
+				ctx.Writer.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+
+			ctx.Writer.Header().Set("Access-Control-Allow-Methods", "OPTIONS, GET, POST, PATCH")
+			ctx.Writer.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, If-Match")
+			ctx.Writer.Header()["Link"] = iceServersToLinkHeader(servers)
 			ctx.Writer.WriteHeader(http.StatusOK)
 
 		case http.MethodPost:
@@ -288,19 +372,23 @@ func (s *webRTCHTTPServer) onRequest(ctx *gin.Context) {
 				return
 			}
 
-			res := s.parent.sessionNew(webRTCSessionNewReq{
-				pathName:     dir,
-				remoteAddr:   ctx.ClientIP(),
-				offer:        offer,
-				publish:      (fname == "whip"),
-				videoCodec:   ctx.Query("video_codec"),
-				audioCodec:   ctx.Query("audio_codec"),
-				videoBitrate: ctx.Query("video_bitrate"),
+			res := s.parent.newSession(webRTCNewSessionReq{
+				pathName:   dir,
+				remoteAddr: remoteAddr,
+				query:      ctx.Request.URL.RawQuery,
+				user:       user,
+				pass:       pass,
+				offer:      offer,
+				publish:    (fname == "whip"),
 			})
 			if res.err != nil {
-				if res.errStatusCode != 0 {
-					ctx.Writer.WriteHeader(res.errStatusCode)
-				}
+				ctx.Writer.WriteHeader(res.errStatusCode)
+				return
+			}
+
+			servers, err := s.parent.generateICEServers()
+			if err != nil {
+				ctx.Writer.WriteHeader(http.StatusInternalServerError)
 				return
 			}
 
@@ -309,7 +397,7 @@ func (s *webRTCHTTPServer) onRequest(ctx *gin.Context) {
 			ctx.Writer.Header().Set("E-Tag", res.sx.secret.String())
 			ctx.Writer.Header().Set("ID", res.sx.uuid.String())
 			ctx.Writer.Header().Set("Accept-Patch", "application/trickle-ice-sdpfrag")
-			ctx.Writer.Header()["Link"] = iceServersToLinkHeader(s.parent.genICEServers())
+			ctx.Writer.Header()["Link"] = iceServersToLinkHeader(servers)
 			ctx.Writer.Header().Set("Location", ctx.Request.URL.String())
 			ctx.Writer.WriteHeader(http.StatusCreated)
 			ctx.Writer.Write(res.answer)
@@ -337,7 +425,7 @@ func (s *webRTCHTTPServer) onRequest(ctx *gin.Context) {
 				return
 			}
 
-			res := s.parent.sessionAddCandidates(webRTCSessionAddCandidatesReq{
+			res := s.parent.addSessionCandidates(webRTCAddSessionCandidatesReq{
 				secret:     secret,
 				candidates: candidates,
 			})

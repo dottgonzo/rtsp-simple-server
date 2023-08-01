@@ -63,7 +63,6 @@ type rtspServer struct {
 }
 
 func newRTSPServer(
-	parentCtx context.Context,
 	address string,
 	authMethods []headers.AuthMethod,
 	readTimeout conf.StringDuration,
@@ -88,7 +87,7 @@ func newRTSPServer(
 	pathManager *pathManager,
 	parent rtspServerParent,
 ) (*rtspServer, error) {
-	ctx, ctxCancel := context.WithCancel(parentCtx)
+	ctx, ctxCancel := context.WithCancel(context.Background())
 
 	s := &rtspServer{
 		authMethods:         authMethods,
@@ -381,7 +380,7 @@ func (s *rtspServer) apiConnsGet(uuid uuid.UUID) (*apiRTSPConn, error) {
 
 	conn := s.findConnByUUID(uuid)
 	if conn == nil {
-		return nil, fmt.Errorf("not found")
+		return nil, errAPINotFound
 	}
 
 	return conn.apiItem(), nil
@@ -426,7 +425,7 @@ func (s *rtspServer) apiSessionsGet(uuid uuid.UUID) (*apiRTSPSession, error) {
 
 	_, sx := s.findSessionByUUID(uuid)
 	if sx == nil {
-		return nil, fmt.Errorf("not found")
+		return nil, errAPINotFound
 	}
 
 	return sx.apiItem(), nil
@@ -445,7 +444,7 @@ func (s *rtspServer) apiSessionsKick(uuid uuid.UUID) error {
 
 	key, sx := s.findSessionByUUID(uuid)
 	if sx == nil {
-		return fmt.Errorf("not found")
+		return errAPINotFound
 	}
 
 	sx.close()

@@ -13,24 +13,21 @@ import (
 	"github.com/bluenviron/gortsplib/v3/pkg/formats"
 	"github.com/bluenviron/gortsplib/v3/pkg/media"
 	"github.com/bluenviron/gortsplib/v3/pkg/ringbuffer"
-	"github.com/bluenviron/mediacommon/pkg/codecs/av1"
 	"github.com/bluenviron/mediacommon/pkg/codecs/h264"
 	"github.com/bluenviron/mediacommon/pkg/codecs/mpeg2audio"
 	"github.com/bluenviron/mediacommon/pkg/codecs/mpeg4audio"
 	"github.com/google/uuid"
-	"github.com/notedit/rtmp/format/flv/flvio"
 
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/externalcmd"
 	"github.com/bluenviron/mediamtx/internal/formatprocessor"
 	"github.com/bluenviron/mediamtx/internal/logger"
 	"github.com/bluenviron/mediamtx/internal/rtmp"
-	"github.com/bluenviron/mediamtx/internal/rtmp/h264conf"
-	"github.com/bluenviron/mediamtx/internal/rtmp/message"
+	"github.com/bluenviron/mediamtx/internal/stream"
 )
 
 const (
-	rtmpConnPauseAfterAuthError = 2 * time.Second
+	rtmpPauseAfterAuthError = 2 * time.Second
 )
 
 func pathNameAndQuery(inURL *url.URL) (string, url.Values, string) {
@@ -41,158 +38,21 @@ func pathNameAndQuery(inURL *url.URL) (string, url.Values, string) {
 	return pathName, ur.Query(), ur.RawQuery
 }
 
-type rtmpWriteFunc func(msg interface{}) error
-
-func getRTMPWriteFunc(medi *media.Media, format formats.Format, stream *stream) rtmpWriteFunc {
-	switch format.(type) {
-	case *formats.H264:
-		return func(msg interface{}) error {
-			tmsg := msg.(*message.Video)
-
-			switch tmsg.Type {
-			case message.VideoTypeConfig:
-				var conf h264conf.Conf
-				err := conf.Unmarshal(tmsg.Payload)
-				if err != nil {
-					return fmt.Errorf("unable to parse H264 config: %v", err)
-				}
-
-				au := [][]byte{
-					conf.SPS,
-					conf.PPS,
-				}
-
-				stream.writeUnit(medi, format, &formatprocessor.UnitH264{
-					PTS: tmsg.DTS + tmsg.PTSDelta,
-					AU:  au,
-					NTP: time.Now(),
-				})
-
-			case message.VideoTypeAU:
-				au, err := h264.AVCCUnmarshal(tmsg.Payload)
-				if err != nil {
-					return fmt.Errorf("unable to decode AVCC: %v", err)
-				}
-
-				stream.writeUnit(medi, format, &formatprocessor.UnitH264{
-					PTS: tmsg.DTS + tmsg.PTSDelta,
-					AU:  au,
-					NTP: time.Now(),
-				})
-			}
-
-			return nil
-		}
-
-	case *formats.H265:
-		return func(msg interface{}) error {
-			switch tmsg := msg.(type) {
-			case *message.Video:
-				au, err := h264.AVCCUnmarshal(tmsg.Payload)
-				if err != nil {
-					return fmt.Errorf("unable to decode AVCC: %v", err)
-				}
-
-				stream.writeUnit(medi, format, &formatprocessor.UnitH265{
-					PTS: tmsg.DTS + tmsg.PTSDelta,
-					AU:  au,
-					NTP: time.Now(),
-				})
-
-			case *message.ExtendedFramesX:
-				au, err := h264.AVCCUnmarshal(tmsg.Payload)
-				if err != nil {
-					return fmt.Errorf("unable to decode AVCC: %v", err)
-				}
-
-				stream.writeUnit(medi, format, &formatprocessor.UnitH265{
-					PTS: tmsg.DTS,
-					AU:  au,
-					NTP: time.Now(),
-				})
-
-			case *message.ExtendedCodedFrames:
-				au, err := h264.AVCCUnmarshal(tmsg.Payload)
-				if err != nil {
-					return fmt.Errorf("unable to decode AVCC: %v", err)
-				}
-
-				stream.writeUnit(medi, format, &formatprocessor.UnitH265{
-					PTS: tmsg.DTS + tmsg.PTSDelta,
-					AU:  au,
-					NTP: time.Now(),
-				})
-			}
-
-			return nil
-		}
-
-	case *formats.AV1:
-		return func(msg interface{}) error {
-			if tmsg, ok := msg.(*message.ExtendedCodedFrames); ok {
-				obus, err := av1.BitstreamUnmarshal(tmsg.Payload, true)
-				if err != nil {
-					return fmt.Errorf("unable to decode bitstream: %v", err)
-				}
-
-				stream.writeUnit(medi, format, &formatprocessor.UnitAV1{
-					PTS:  tmsg.DTS,
-					OBUs: obus,
-					NTP:  time.Now(),
-				})
-			}
-
-			return nil
-		}
-
-	case *formats.MPEG2Audio:
-		return func(msg interface{}) error {
-			tmsg := msg.(*message.Audio)
-
-			stream.writeUnit(medi, format, &formatprocessor.UnitMPEG2Audio{
-				PTS:    tmsg.DTS,
-				Frames: [][]byte{tmsg.Payload},
-				NTP:    time.Now(),
-			})
-
-			return nil
-		}
-
-	case *formats.MPEG4Audio:
-		return func(msg interface{}) error {
-			tmsg := msg.(*message.Audio)
-
-			if tmsg.AACType == message.AudioAACTypeAU {
-				stream.writeUnit(medi, format, &formatprocessor.UnitMPEG4AudioGeneric{
-					PTS: tmsg.DTS,
-					AUs: [][]byte{tmsg.Payload},
-					NTP: time.Now(),
-				})
-			}
-
-			return nil
-		}
-	}
-
-	return nil
-}
-
 type rtmpConnState int
 
 const (
-	rtmpConnStateIdle rtmpConnState = iota //nolint:deadcode,varcheck
-	rtmpConnStateRead
+	rtmpConnStateRead rtmpConnState = iota + 1
 	rtmpConnStatePublish
 )
 
 type rtmpConnPathManager interface {
-	readerAdd(req pathReaderAddReq) pathReaderSetupPlayRes
-	publisherAdd(req pathPublisherAddReq) pathPublisherAnnounceRes
+	addReader(req pathAddReaderReq) pathAddReaderRes
+	addPublisher(req pathAddPublisherReq) pathAddPublisherRes
 }
 
 type rtmpConnParent interface {
 	logger.Writer
-	connClose(*rtmpConn)
+	closeConn(*rtmpConn)
 }
 
 type rtmpConn struct {
@@ -204,18 +64,19 @@ type rtmpConn struct {
 	runOnConnect        string
 	runOnConnectRestart bool
 	wg                  *sync.WaitGroup
-	conn                *rtmp.Conn
 	nconn               net.Conn
 	externalCmdPool     *externalcmd.Pool
 	pathManager         rtmpConnPathManager
 	parent              rtmpConnParent
 
-	ctx        context.Context
-	ctxCancel  func()
-	uuid       uuid.UUID
-	created    time.Time
-	state      rtmpConnState
-	stateMutex sync.Mutex
+	ctx       context.Context
+	ctxCancel func()
+	uuid      uuid.UUID
+	created   time.Time
+	mutex     sync.RWMutex
+	conn      *rtmp.Conn
+	state     rtmpConnState
+	pathName  string
 }
 
 func newRTMPConn(
@@ -244,7 +105,6 @@ func newRTMPConn(
 		runOnConnect:        runOnConnect,
 		runOnConnectRestart: runOnConnectRestart,
 		wg:                  wg,
-		conn:                rtmp.NewConn(nconn),
 		nconn:               nconn,
 		externalCmdPool:     externalCmdPool,
 		pathManager:         pathManager,
@@ -279,12 +139,6 @@ func (c *rtmpConn) ip() net.IP {
 	return c.nconn.RemoteAddr().(*net.TCPAddr).IP
 }
 
-func (c *rtmpConn) safeState() rtmpConnState {
-	c.stateMutex.Lock()
-	defer c.stateMutex.Unlock()
-	return c.state
-}
-
 func (c *rtmpConn) run() {
 	defer c.wg.Done()
 
@@ -296,7 +150,8 @@ func (c *rtmpConn) run() {
 			c.runOnConnect,
 			c.runOnConnectRestart,
 			externalcmd.Environment{
-				"RTSP_PATH": "",
+				"MTX_PATH":  "",
+				"RTSP_PATH": "", // deprecated
 				"RTSP_PORT": port,
 			},
 			func(err error) {
@@ -309,53 +164,53 @@ func (c *rtmpConn) run() {
 		}()
 	}
 
-	ctx, cancel := context.WithCancel(c.ctx)
-	runErr := make(chan error)
-	go func() {
-		runErr <- c.runInner(ctx)
+	err := func() error {
+		readerErr := make(chan error)
+		go func() {
+			readerErr <- c.runReader()
+		}()
+
+		select {
+		case err := <-readerErr:
+			c.nconn.Close()
+			return err
+
+		case <-c.ctx.Done():
+			c.nconn.Close()
+			<-readerErr
+			return errors.New("terminated")
+		}
 	}()
-
-	var err error
-	select {
-	case err = <-runErr:
-		cancel()
-
-	case <-c.ctx.Done():
-		cancel()
-		<-runErr
-		err = errors.New("terminated")
-	}
 
 	c.ctxCancel()
 
-	c.parent.connClose(c)
+	c.parent.closeConn(c)
 
 	c.Log(logger.Info, "closed (%v)", err)
 }
 
-func (c *rtmpConn) runInner(ctx context.Context) error {
-	go func() {
-		<-ctx.Done()
-		c.nconn.Close()
-	}()
-
+func (c *rtmpConn) runReader() error {
 	c.nconn.SetReadDeadline(time.Now().Add(time.Duration(c.readTimeout)))
 	c.nconn.SetWriteDeadline(time.Now().Add(time.Duration(c.writeTimeout)))
-	u, publish, err := c.conn.InitializeServer()
+	conn, u, publish, err := rtmp.NewServerConn(c.nconn)
 	if err != nil {
 		return err
 	}
 
+	c.mutex.Lock()
+	c.conn = conn
+	c.mutex.Unlock()
+
 	if !publish {
-		return c.runRead(ctx, u)
+		return c.runRead(conn, u)
 	}
-	return c.runPublish(u)
+	return c.runPublish(conn, u)
 }
 
-func (c *rtmpConn) runRead(ctx context.Context, u *url.URL) error {
+func (c *rtmpConn) runRead(conn *rtmp.Conn, u *url.URL) error {
 	pathName, query, rawQuery := pathNameAndQuery(u)
 
-	res := c.pathManager.readerAdd(pathReaderAddReq{
+	res := c.pathManager.addReader(pathAddReaderReq{
 		author:   c,
 		pathName: pathName,
 		credentials: authCredentials{
@@ -369,48 +224,59 @@ func (c *rtmpConn) runRead(ctx context.Context, u *url.URL) error {
 	})
 
 	if res.err != nil {
-		if terr, ok := res.err.(pathErrAuth); ok {
+		if terr, ok := res.err.(*errAuthentication); ok {
 			// wait some seconds to stop brute force attacks
-			<-time.After(rtmpConnPauseAfterAuthError)
-			return terr.wrapped
+			<-time.After(rtmpPauseAfterAuthError)
+			return terr
 		}
 		return res.err
 	}
 
-	defer res.path.readerRemove(pathReaderRemoveReq{author: c})
+	defer res.path.removeReader(pathRemoveReaderReq{author: c})
 
-	c.stateMutex.Lock()
+	c.mutex.Lock()
 	c.state = rtmpConnStateRead
-	c.stateMutex.Unlock()
+	c.pathName = pathName
+	c.mutex.Unlock()
 
 	ringBuffer, _ := ringbuffer.New(uint64(c.readBufferCount))
 	go func() {
-		<-ctx.Done()
+		<-c.ctx.Done()
 		ringBuffer.Close()
 	}()
 
 	var medias media.Medias
 	videoFirstIDRFound := false
 	var videoStartDTS time.Duration
+	var w *rtmp.Writer
 
-	videoMedia, videoFormat := c.findVideoFormat(res.stream, ringBuffer,
-		&videoFirstIDRFound, &videoStartDTS)
+	videoMedia, videoFormat := c.setupVideo(
+		&w,
+		res.stream,
+		ringBuffer,
+		&videoFirstIDRFound,
+		&videoStartDTS)
 	if videoMedia != nil {
 		medias = append(medias, videoMedia)
 	}
 
-	audioMedia, audioFormat := c.findAudioFormat(res.stream, ringBuffer,
-		videoFormat, &videoFirstIDRFound, &videoStartDTS)
+	audioMedia, audioFormat := c.setupAudio(
+		&w,
+		res.stream,
+		ringBuffer,
+		videoFormat,
+		&videoFirstIDRFound,
+		&videoStartDTS)
 	if audioFormat != nil {
 		medias = append(medias, audioMedia)
 	}
 
 	if videoFormat == nil && audioFormat == nil {
 		return fmt.Errorf(
-			"the stream doesn't contain any supported codec, which are currently H264, MPEG-1/2 Audio, MPEG-4 Audio")
+			"the stream doesn't contain any supported codec, which are currently H264, MPEG-4 Audio, MPEG-1/2 Audio")
 	}
 
-	defer res.stream.readerRemove(c)
+	defer res.stream.RemoveReader(c)
 
 	c.Log(logger.Info, "is reading from path '%s', %s",
 		res.path.name, sourceMediaInfo(medias))
@@ -433,7 +299,8 @@ func (c *rtmpConn) runRead(ctx context.Context, u *url.URL) error {
 		}()
 	}
 
-	err := c.conn.WriteTracks(videoFormat, audioFormat)
+	var err error
+	w, err = rtmp.NewWriter(conn, videoFormat, audioFormat)
 	if err != nil {
 		return err
 	}
@@ -454,18 +321,22 @@ func (c *rtmpConn) runRead(ctx context.Context, u *url.URL) error {
 	}
 }
 
-func (c *rtmpConn) findVideoFormat(stream *stream, ringBuffer *ringbuffer.RingBuffer,
-	videoFirstIDRFound *bool, videoStartDTS *time.Duration,
+func (c *rtmpConn) setupVideo(
+	w **rtmp.Writer,
+	stream *stream.Stream,
+	ringBuffer *ringbuffer.RingBuffer,
+	videoFirstIDRFound *bool,
+	videoStartDTS *time.Duration,
 ) (*media.Media, formats.Format) {
 	var videoFormatH264 *formats.H264
-	videoMedia := stream.medias().FindFormat(&videoFormatH264)
+	videoMedia := stream.Medias().FindFormat(&videoFormatH264)
 
 	if videoFormatH264 != nil {
-		videoStartPTSFilled := false
-		var videoStartPTS time.Duration
+		startPTSFilled := false
+		var startPTS time.Duration
 		var videoDTSExtractor *h264.DTSExtractor
 
-		stream.readerAdd(c, videoMedia, videoFormatH264, func(unit formatprocessor.Unit) {
+		stream.AddReader(c, videoMedia, videoFormatH264, func(unit formatprocessor.Unit) {
 			ringBuffer.Push(func() error {
 				tunit := unit.(*formatprocessor.UnitH264)
 
@@ -473,11 +344,11 @@ func (c *rtmpConn) findVideoFormat(stream *stream, ringBuffer *ringbuffer.RingBu
 					return nil
 				}
 
-				if !videoStartPTSFilled {
-					videoStartPTSFilled = true
-					videoStartPTS = tunit.PTS
+				if !startPTSFilled {
+					startPTSFilled = true
+					startPTS = tunit.PTS
 				}
-				pts := tunit.PTS - videoStartPTS
+				pts := tunit.PTS - startPTS
 
 				idrPresent := false
 				nonIDRPresent := false
@@ -528,27 +399,8 @@ func (c *rtmpConn) findVideoFormat(stream *stream, ringBuffer *ringbuffer.RingBu
 					pts -= *videoStartDTS
 				}
 
-				avcc, err := h264.AVCCMarshal(tunit.AU)
-				if err != nil {
-					return err
-				}
-
 				c.nconn.SetWriteDeadline(time.Now().Add(time.Duration(c.writeTimeout)))
-				err = c.conn.WriteMessage(&message.Video{
-					ChunkStreamID:   message.VideoChunkStreamID,
-					MessageStreamID: 0x1000000,
-					Codec:           message.CodecH264,
-					IsKeyFrame:      idrPresent,
-					Type:            message.VideoTypeAU,
-					Payload:         avcc,
-					DTS:             dts,
-					PTSDelta:        pts - dts,
-				})
-				if err != nil {
-					return err
-				}
-
-				return nil
+				return (*w).WriteH264(pts, dts, idrPresent, tunit.AU)
 			})
 		})
 
@@ -558,21 +410,22 @@ func (c *rtmpConn) findVideoFormat(stream *stream, ringBuffer *ringbuffer.RingBu
 	return nil, nil
 }
 
-func (c *rtmpConn) findAudioFormat(
-	stream *stream,
+func (c *rtmpConn) setupAudio(
+	w **rtmp.Writer,
+	stream *stream.Stream,
 	ringBuffer *ringbuffer.RingBuffer,
 	videoFormat formats.Format,
 	videoFirstIDRFound *bool,
 	videoStartDTS *time.Duration,
 ) (*media.Media, formats.Format) {
 	var audioFormatMPEG4Generic *formats.MPEG4AudioGeneric
-	audioMedia := stream.medias().FindFormat(&audioFormatMPEG4Generic)
+	audioMedia := stream.Medias().FindFormat(&audioFormatMPEG4Generic)
 
 	if audioMedia != nil {
-		audioStartPTSFilled := false
-		var audioStartPTS time.Duration
+		startPTSFilled := false
+		var startPTS time.Duration
 
-		stream.readerAdd(c, audioMedia, audioFormatMPEG4Generic, func(unit formatprocessor.Unit) {
+		stream.AddReader(c, audioMedia, audioFormatMPEG4Generic, func(unit formatprocessor.Unit) {
 			ringBuffer.Push(func() error {
 				tunit := unit.(*formatprocessor.UnitMPEG4AudioGeneric)
 
@@ -580,11 +433,11 @@ func (c *rtmpConn) findAudioFormat(
 					return nil
 				}
 
-				if !audioStartPTSFilled {
-					audioStartPTSFilled = true
-					audioStartPTS = tunit.PTS
+				if !startPTSFilled {
+					startPTSFilled = true
+					startPTS = tunit.PTS
 				}
-				pts := tunit.PTS - audioStartPTS
+				pts := tunit.PTS - startPTS
 
 				if videoFormat != nil {
 					if !*videoFirstIDRFound {
@@ -599,18 +452,11 @@ func (c *rtmpConn) findAudioFormat(
 
 				for i, au := range tunit.AUs {
 					c.nconn.SetWriteDeadline(time.Now().Add(time.Duration(c.writeTimeout)))
-					err := c.conn.WriteMessage(&message.Audio{
-						ChunkStreamID:   message.AudioChunkStreamID,
-						MessageStreamID: 0x1000000,
-						Codec:           message.CodecMPEG4Audio,
-						Rate:            flvio.SOUND_44Khz,
-						Depth:           flvio.SOUND_16BIT,
-						Channels:        flvio.SOUND_STEREO,
-						AACType:         message.AudioAACTypeAU,
-						Payload:         au,
-						DTS: pts + time.Duration(i)*mpeg4audio.SamplesPerAccessUnit*
+					err := (*w).WriteMPEG4Audio(
+						pts+time.Duration(i)*mpeg4audio.SamplesPerAccessUnit*
 							time.Second/time.Duration(audioFormatMPEG4Generic.ClockRate()),
-					})
+						au,
+					)
 					if err != nil {
 						return err
 					}
@@ -624,16 +470,16 @@ func (c *rtmpConn) findAudioFormat(
 	}
 
 	var audioFormatMPEG4AudioLATM *formats.MPEG4AudioLATM
-	audioMedia = stream.medias().FindFormat(&audioFormatMPEG4AudioLATM)
+	audioMedia = stream.Medias().FindFormat(&audioFormatMPEG4AudioLATM)
 
 	if audioMedia != nil &&
 		audioFormatMPEG4AudioLATM.Config != nil &&
 		len(audioFormatMPEG4AudioLATM.Config.Programs) == 1 &&
 		len(audioFormatMPEG4AudioLATM.Config.Programs[0].Layers) == 1 {
-		audioStartPTSFilled := false
-		var audioStartPTS time.Duration
+		startPTSFilled := false
+		var startPTS time.Duration
 
-		stream.readerAdd(c, audioMedia, audioFormatMPEG4AudioLATM, func(unit formatprocessor.Unit) {
+		stream.AddReader(c, audioMedia, audioFormatMPEG4AudioLATM, func(unit formatprocessor.Unit) {
 			ringBuffer.Push(func() error {
 				tunit := unit.(*formatprocessor.UnitMPEG4AudioLATM)
 
@@ -641,11 +487,11 @@ func (c *rtmpConn) findAudioFormat(
 					return nil
 				}
 
-				if !audioStartPTSFilled {
-					audioStartPTSFilled = true
-					audioStartPTS = tunit.PTS
+				if !startPTSFilled {
+					startPTSFilled = true
+					startPTS = tunit.PTS
 				}
-				pts := tunit.PTS - audioStartPTS
+				pts := tunit.PTS - startPTS
 
 				if videoFormat != nil {
 					if !*videoFirstIDRFound {
@@ -659,22 +505,7 @@ func (c *rtmpConn) findAudioFormat(
 				}
 
 				c.nconn.SetWriteDeadline(time.Now().Add(time.Duration(c.writeTimeout)))
-				err := c.conn.WriteMessage(&message.Audio{
-					ChunkStreamID:   message.AudioChunkStreamID,
-					MessageStreamID: 0x1000000,
-					Codec:           message.CodecMPEG4Audio,
-					Rate:            flvio.SOUND_44Khz,
-					Depth:           flvio.SOUND_16BIT,
-					Channels:        flvio.SOUND_STEREO,
-					AACType:         message.AudioAACTypeAU,
-					Payload:         tunit.AU,
-					DTS:             pts,
-				})
-				if err != nil {
-					return err
-				}
-
-				return nil
+				return (*w).WriteMPEG4Audio(pts, tunit.AU)
 			})
 		})
 
@@ -682,21 +513,21 @@ func (c *rtmpConn) findAudioFormat(
 	}
 
 	var audioFormatMPEG2 *formats.MPEG2Audio
-	audioMedia = stream.medias().FindFormat(&audioFormatMPEG2)
+	audioMedia = stream.Medias().FindFormat(&audioFormatMPEG2)
 
 	if audioMedia != nil {
-		audioStartPTSFilled := false
-		var audioStartPTS time.Duration
+		startPTSFilled := false
+		var startPTS time.Duration
 
-		stream.readerAdd(c, audioMedia, audioFormatMPEG2, func(unit formatprocessor.Unit) {
+		stream.AddReader(c, audioMedia, audioFormatMPEG2, func(unit formatprocessor.Unit) {
 			ringBuffer.Push(func() error {
 				tunit := unit.(*formatprocessor.UnitMPEG2Audio)
 
-				if !audioStartPTSFilled {
-					audioStartPTSFilled = true
-					audioStartPTS = tunit.PTS
+				if !startPTSFilled {
+					startPTSFilled = true
+					startPTS = tunit.PTS
 				}
-				pts := tunit.PTS - audioStartPTS
+				pts := tunit.PTS - startPTS
 
 				if videoFormat != nil {
 					if !*videoFirstIDRFound {
@@ -720,34 +551,8 @@ func (c *rtmpConn) findAudioFormat(
 						return fmt.Errorf("RTMP only supports MPEG-1 layer 3 audio")
 					}
 
-					channels := uint8(flvio.SOUND_STEREO)
-					if h.ChannelMode == mpeg2audio.ChannelModeMono {
-						channels = flvio.SOUND_MONO
-					}
-
-					rate := uint8(flvio.SOUND_44Khz)
-					switch h.SampleRate {
-					case 5500:
-						rate = flvio.SOUND_5_5Khz
-					case 11025:
-						rate = flvio.SOUND_11Khz
-					case 22050:
-						rate = flvio.SOUND_22Khz
-					}
-
-					msg := &message.Audio{
-						ChunkStreamID:   message.AudioChunkStreamID,
-						MessageStreamID: 0x1000000,
-						Codec:           message.CodecMPEG2Audio,
-						Rate:            rate,
-						Depth:           flvio.SOUND_16BIT,
-						Channels:        channels,
-						Payload:         frame,
-						DTS:             pts,
-					}
-
 					c.nconn.SetWriteDeadline(time.Now().Add(time.Duration(c.writeTimeout)))
-					err = c.conn.WriteMessage(msg)
+					err = (*w).WriteMPEG2Audio(pts, &h, frame)
 					if err != nil {
 						return err
 					}
@@ -766,10 +571,10 @@ func (c *rtmpConn) findAudioFormat(
 	return nil, nil
 }
 
-func (c *rtmpConn) runPublish(u *url.URL) error {
+func (c *rtmpConn) runPublish(conn *rtmp.Conn, u *url.URL) error {
 	pathName, query, rawQuery := pathNameAndQuery(u)
 
-	res := c.pathManager.publisherAdd(pathPublisherAddReq{
+	res := c.pathManager.addPublisher(pathAddPublisherReq{
 		author:   c,
 		pathName: pathName,
 		credentials: authCredentials{
@@ -783,46 +588,106 @@ func (c *rtmpConn) runPublish(u *url.URL) error {
 	})
 
 	if res.err != nil {
-		if terr, ok := res.err.(pathErrAuth); ok {
+		if terr, ok := res.err.(*errAuthentication); ok {
 			// wait some seconds to stop brute force attacks
-			<-time.After(rtmpConnPauseAfterAuthError)
-			return terr.wrapped
+			<-time.After(rtmpPauseAfterAuthError)
+			return terr
 		}
 		return res.err
 	}
 
-	defer res.path.publisherRemove(pathPublisherRemoveReq{author: c})
+	defer res.path.removePublisher(pathRemovePublisherReq{author: c})
 
-	c.stateMutex.Lock()
+	c.mutex.Lock()
 	c.state = rtmpConnStatePublish
-	c.stateMutex.Unlock()
+	c.pathName = pathName
+	c.mutex.Unlock()
 
-	videoFormat, audioFormat, err := c.conn.ReadTracks()
+	r, err := rtmp.NewReader(conn)
 	if err != nil {
 		return err
 	}
+	videoFormat, audioFormat := r.Tracks()
 
 	var medias media.Medias
-	var videoMedia *media.Media
-	var audioMedia *media.Media
+	var stream *stream.Stream
 
 	if videoFormat != nil {
-		videoMedia = &media.Media{
+		videoMedia := &media.Media{
 			Type:    media.TypeVideo,
 			Formats: []formats.Format{videoFormat},
 		}
 		medias = append(medias, videoMedia)
+
+		switch videoFormat.(type) {
+		case *formats.AV1:
+			r.OnDataAV1(func(pts time.Duration, obus [][]byte) {
+				stream.WriteUnit(videoMedia, videoFormat, &formatprocessor.UnitAV1{
+					BaseUnit: formatprocessor.BaseUnit{
+						NTP: time.Now(),
+					},
+					PTS:  pts,
+					OBUs: obus,
+				})
+			})
+
+		case *formats.H265:
+			r.OnDataH265(func(pts time.Duration, au [][]byte) {
+				stream.WriteUnit(videoMedia, videoFormat, &formatprocessor.UnitH265{
+					BaseUnit: formatprocessor.BaseUnit{
+						NTP: time.Now(),
+					},
+					PTS: pts,
+					AU:  au,
+				})
+			})
+
+		case *formats.H264:
+			r.OnDataH264(func(pts time.Duration, au [][]byte) {
+				stream.WriteUnit(videoMedia, videoFormat, &formatprocessor.UnitH264{
+					BaseUnit: formatprocessor.BaseUnit{
+						NTP: time.Now(),
+					},
+					PTS: pts,
+					AU:  au,
+				})
+			})
+		}
 	}
 
-	if audioFormat != nil {
-		audioMedia = &media.Media{
+	if audioFormat != nil { //nolint:dupl
+		audioMedia := &media.Media{
 			Type:    media.TypeAudio,
 			Formats: []formats.Format{audioFormat},
 		}
 		medias = append(medias, audioMedia)
+
+		switch audioFormat.(type) {
+		case *formats.MPEG4AudioGeneric:
+			r.OnDataMPEG4Audio(func(pts time.Duration, au []byte) {
+				stream.WriteUnit(audioMedia, audioFormat, &formatprocessor.UnitMPEG4AudioGeneric{
+					BaseUnit: formatprocessor.BaseUnit{
+						NTP: time.Now(),
+					},
+					PTS: pts,
+					AUs: [][]byte{au},
+				})
+			})
+
+		case *formats.MPEG2Audio:
+			r.OnDataMPEG2Audio(func(pts time.Duration, frame []byte) {
+				stream.WriteUnit(audioMedia, audioFormat, &formatprocessor.UnitMPEG2Audio{
+					BaseUnit: formatprocessor.BaseUnit{
+						NTP: time.Now(),
+					},
+					PTS:    pts,
+					Frames: [][]byte{frame},
+				})
+			})
+		}
 	}
 
-	rres := res.path.publisherStart(pathPublisherStartReq{
+	rres := res.path.startPublisher(pathStartPublisherReq{
 		author:             c,
 		medias:             medias,
 		generateRTPPackets: true,
@@ -835,39 +700,16 @@ func (c *rtmpConn) runPublish(u *url.URL) error {
 		res.path.name,
 		sourceMediaInfo(medias))
 
+	stream = rres.stream
+
 	// disable write deadline to allow outgoing acknowledges
 	c.nconn.SetWriteDeadline(time.Time{})
 
-	videoWriteFunc := getRTMPWriteFunc(videoMedia, videoFormat, rres.stream)
-	audioWriteFunc := getRTMPWriteFunc(audioMedia, audioFormat, rres.stream)
-
 	for {
 		c.nconn.SetReadDeadline(time.Now().Add(time.Duration(c.readTimeout)))
-		msg, err := c.conn.ReadMessage()
+		err := r.Read()
 		if err != nil {
 			return err
-		}
-
-		switch msg.(type) {
-		case *message.Video, *message.ExtendedFramesX, *message.ExtendedCodedFrames:
-			if videoFormat == nil {
-				return fmt.Errorf("received a video packet, but track is not set up")
-			}
-
-			err := videoWriteFunc(msg)
-			if err != nil {
-				c.Log(logger.Warn, "%v", err)
-			}
-
-		case *message.Audio:
-			if audioFormat == nil {
-				return fmt.Errorf("received an audio packet, but track is not set up")
-			}
-
-			err := audioWriteFunc(msg)
-			if err != nil {
-				c.Log(logger.Warn, "%v", err)
-			}
 		}
 	}
 }
@@ -891,21 +733,35 @@ func (c *rtmpConn) apiSourceDescribe() pathAPISourceOrReader {
 }
 
 func (c *rtmpConn) apiItem() *apiRTMPConn {
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+
+	bytesReceived := uint64(0)
+	bytesSent := uint64(0)
+
+	if c.conn != nil {
+		bytesReceived = c.conn.BytesReceived()
+		bytesSent = c.conn.BytesSent()
+	}
+
 	return &apiRTMPConn{
 		ID:         c.uuid,
 		Created:    c.created,
 		RemoteAddr: c.remoteAddr().String(),
 		State: func() string {
-			switch c.safeState() {
+			switch c.state {
 			case rtmpConnStateRead:
 				return "read"
 
 			case rtmpConnStatePublish:
 				return "publish"
+
+			default:
+				return "idle"
 			}
-			return "idle"
 		}(),
-		BytesReceived: c.conn.BytesReceived(),
-		BytesSent:     c.conn.BytesSent(),
+		Path:          c.pathName,
+		BytesReceived: bytesReceived,
+		BytesSent:     bytesSent,
 	}
 }

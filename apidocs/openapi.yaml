@@ -149,10 +149,17 @@ components:
           type: array
           items:
             type: string
-        webrtcICEServers:
+        webrtcICEServers2:
           type: array
           items:
-            type: string
+            type: object
+            properties:
+              url:
+                type: string
+              username:
+                type: string
+              password:
+                type: string
         webrtcICEHostNAT1To1IPs:
           type: array
           items:
@@ -160,6 +167,12 @@ components:
         webrtcICEUDPMuxAddress:
           type: string
         webrtcICETCPMuxAddress:
+          type: string
+
+        # srt
+        srt:
+          type: boolean
+        srtAddress:
           type: string
 
         # paths
@@ -257,6 +270,8 @@ components:
           type: number
         rpiCameraROI:
           type: string
+        rpiCameraHDR:
+          type: boolean
         rpiCameraTuningFile:
           type: string
         rpiCameraMode:
@@ -321,6 +336,12 @@ components:
           $ref: '#/components/schemas/PathSourceOrReader'
         sourceReady:
           type: boolean
+          description: deprecated, replaced by 'ready'
+        ready:
+          type: boolean
+        readyTime:
+          type: string
+          nullable: true
         tracks:
           type: array
           items:
@@ -333,6 +354,16 @@ components:
           items:
             $ref: '#/components/schemas/PathSourceOrReader'
 
+    PathsList:
+      type: object
+      properties:
+        pageCount:
+          type: integer
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Path'
+
     PathSourceOrReader:
       type: object
       properties:
@@ -341,72 +372,20 @@ components:
           enum:
           - hlsMuxer
           - hlsSource
+          - redirect
           - rpiCameraSource
-          - rtmpSession
+          - rtmpConn
           - rtmpSource
           - rtmpsSession
           - rtspSession
           - rtspSource
           - rtspsSession
-          - redirect
+          - srtConn
+          - srtSource
           - udpSource
           - webRTCSession
         id:
           type: string
-
-    RTSPConn:
-      type: object
-      properties:
-        id:
-          type: string
-        created:
-          type: string
-        remoteAddr:
-          type: string
-        bytesReceived:
-          type: integer
-          format: int64
-        bytesSent:
-          type: integer
-          format: int64
-
-    RTSPSession:
-      type: object
-      properties:
-        id:
-          type: string
-        created:
-          type: string
-        remoteAddr:
-          type: string
-        state:
-          type: string
-          enum: [idle, read, publish]
-        bytesReceived:
-          type: integer
-          format: int64
-        bytesSent:
-          type: integer
-          format: int64
-
-    RTMPConn:
-      type: object
-      properties:
-        id:
-          type: string
-        created:
-          type: string
-        remoteAddr:
-          type: string
-        state:
-          type: string
-          enum: [idle, read, publish]
-        bytesReceived:
-          type: integer
-          format: int64
-        bytesSent:
-          type: integer
-          format: int64
 
     HLSMuxer:
       type: object
@@ -431,15 +410,26 @@ components:
           items:
             $ref: '#/components/schemas/HLSMuxer'
 
-    PathsList:
+    RTMPConn:
       type: object
       properties:
-        pageCount:
+        id:
+          type: string
+        created:
+          type: string
+        remoteAddr:
+          type: string
+        state:
+          type: string
+          enum: [idle, read, publish]
+        path:
+          type: string
+        bytesReceived:
           type: integer
-        items:
-          type: array
-          items:
-            $ref: '#/components/schemas/Path'
+          format: int64
+        bytesSent:
+          type: integer
+          format: int64
 
     RTMPConnsList:
       type: object
@@ -451,6 +441,22 @@ components:
           items:
             $ref: '#/components/schemas/RTMPConn'
 
+    RTSPConn:
+      type: object
+      properties:
+        id:
+          type: string
+        created:
+          type: string
+        remoteAddr:
+          type: string
+        bytesReceived:
+          type: integer
+          format: int64
+        bytesSent:
+          type: integer
+          format: int64
+
     RTSPConnsList:
       type: object
       properties:
@@ -461,6 +467,27 @@ components:
           items:
             $ref: '#/components/schemas/RTSPConn'
 
+    RTSPSession:
+      type: object
+      properties:
+        id:
+          type: string
+        created:
+          type: string
+        remoteAddr:
+          type: string
+        state:
+          type: string
+          enum: [idle, read, publish]
+        path:
+          type: string
+        bytesReceived:
+          type: integer
+          format: int64
+        bytesSent:
+          type: integer
+          format: int64
+
     RTSPSessionsList:
       type: object
       properties:
@@ -470,6 +497,37 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/RTSPSession'
+
+    SRTConn:
+      type: object
+      properties:
+        id:
+          type: string
+        created:
+          type: string
+        remoteAddr:
+          type: string
+        state:
+          type: string
+          enum: [idle, read, publish]
+        path:
+          type: string
+        bytesReceived:
+          type: integer
+          format: int64
+        bytesSent:
+          type: integer
+          format: int64
+
+    SRTConnsList:
+      type: object
+      properties:
+        pageCount:
+          type: integer
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SRTConn'
 
     WebRTCSession:
       type: object
@@ -489,6 +547,8 @@ components:
         state:
           type: string
           enum: [read, publish]
+        path:
+          type: string
         bytesReceived:
           type: integer
           format: int64
@@ -592,6 +652,8 @@ paths:
           description: the request was successful.
         '400':
           description: invalid request.
+        '404':
+          description: configuration not found.
         '500':
           description: internal server error.
 
@@ -612,6 +674,8 @@ paths:
           description: the request was successful.
         '400':
           description: invalid request.
+        '404':
+          description: configuration not found.
         '500':
           description: internal server error.
 
@@ -666,6 +730,8 @@ paths:
                 $ref: '#/components/schemas/HLSMuxer'
         '400':
           description: invalid request.
+        '404':
+          description: muxer not found.
         '500':
           description: internal server error.
 
@@ -720,6 +786,8 @@ paths:
                 $ref: '#/components/schemas/Path'
         '400':
           description: invalid request.
+        '404':
+          description: path not found.
         '500':
           description: internal server error.
 
@@ -774,6 +842,8 @@ paths:
                 $ref: '#/components/schemas/RTSPConn'
         '400':
           description: invalid request.
+        '404':
+          description: connection not found.
         '500':
           description: internal server error.
 
@@ -828,6 +898,8 @@ paths:
                 $ref: '#/components/schemas/RTSPSession'
         '400':
           description: invalid request.
+        '404':
+          description: session not found.
         '500':
           description: internal server error.
 
@@ -848,6 +920,8 @@ paths:
           description: the request was successful.
         '400':
           description: invalid request.
+        '404':
+          description: session not found.
         '500':
           description: internal server error.
 
@@ -902,6 +976,8 @@ paths:
                 $ref: '#/components/schemas/RTSPConn'
         '400':
           description: invalid request.
+        '404':
+          description: connection not found.
         '500':
           description: internal server error.
 
@@ -932,6 +1008,8 @@ paths:
                 $ref: '#/components/schemas/RTSPSessionsList'
         '400':
           description: invalid request.
+        '404':
+          description: session not found.
         '500':
           description: internal server error.
 
@@ -956,6 +1034,8 @@ paths:
                 $ref: '#/components/schemas/RTSPSession'
         '400':
           description: invalid request.
+        '404':
+          description: session not found.
         '500':
           description: internal server error.
 
@@ -976,6 +1056,8 @@ paths:
           description: the request was successful.
         '400':
           description: invalid request.
+        '404':
+          description: session not found.
         '500':
           description: internal server error.
 
@@ -1030,6 +1112,8 @@ paths:
                 $ref: '#/components/schemas/RTMPConn'
         '400':
           description: invalid request.
+        '404':
+          description: connection not found.
         '500':
           description: internal server error.
 
@@ -1050,6 +1134,8 @@ paths:
           description: the request was successful.
         '400':
           description: invalid request.
+        '404':
+          description: session not found.
         '500':
           description: internal server error.
 
@@ -1104,6 +1190,8 @@ paths:
                 $ref: '#/components/schemas/RTMPConn'
         '400':
           description: invalid request.
+        '404':
+          description: connection not found.
         '500':
           description: internal server error.
 
@@ -1124,6 +1212,86 @@ paths:
           description: the request was successful.
         '400':
           description: invalid request.
+        '404':
+          description: session not found.
+        '500':
+          description: internal server error.
+
+  /v2/srtconns/list:
+    get:
+      operationId: srtConnsList
+      summary: returns all SRT connections.
+      description: ''
+      parameters:
+      - name: page
+        in: query
+        description: page number.
+        schema:
+          type: number
+          default: 0
+      - name: itemsPerPage
+        in: query
+        description: items per page.
+        schema:
+          type: number
+          default: 100
+      responses:
+        '200':
+          description: the request was successful.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SRTConnsList'
+        '400':
+          description: invalid request.
+        '500':
+          description: internal server error.
+
+  /v2/srtconns/get/{id}:
+    get:
+      operationId: srtConnsGet
+      summary: returns a SRT connection.
+      description: ''
+      parameters:
+      - name: id
+        in: path
+        required: true
+        description: ID of the connection.
+        schema:
+          type: string
+      responses:
+        '200':
+          description: the request was successful.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SRTConn'
+        '400':
+          description: invalid request.
+        '404':
+          description: connection not found.
+        '500':
+          description: internal server error.
+
+  /v2/srtconns/kick/{id}:
+    post:
+      operationId: srtConnsKick
+      summary: kicks out a SRT connection from the server.
+      description: ''
+      parameters:
+      - name: id
+        in: path
+        required: true
+        description: ID of the connection.
+        schema:
+          type: string
+      responses:
+        '200':
+          description: the request was successful.
+        '400':
+          description: invalid request.
+        '404':
+          description: connection not found.
         '500':
           description: internal server error.
 
@@ -1178,6 +1346,8 @@ paths:
                 $ref: '#/components/schemas/WebRTCSession'
         '400':
           description: invalid request.
+        '404':
+          description: session not found.
         '500':
           description: internal server error.
 
@@ -1198,5 +1368,7 @@ paths:
           description: the request was successful.
         '400':
           description: invalid request.
+        '404':
+          description: session not found.
         '500':
           description: internal server error.

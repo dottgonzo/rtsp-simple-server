@@ -11,6 +11,7 @@ import (
 	"github.com/bluenviron/mediamtx/internal/formatprocessor"
 	"github.com/bluenviron/mediamtx/internal/logger"
 	"github.com/bluenviron/mediamtx/internal/rpicamera"
+	"github.com/bluenviron/mediamtx/internal/stream"
 )
 
 func paramsFromConf(cnf *conf.PathConf) rpicamera.Params {
@@ -32,6 +33,7 @@ func paramsFromConf(cnf *conf.PathConf) rpicamera.Params {
 		Gain:              cnf.RPICameraGain,
 		EV:                cnf.RPICameraEV,
 		ROI:               cnf.RPICameraROI,
+		HDR:               cnf.RPICameraHDR,
 		TuningFile:        cnf.RPICameraTuningFile,
 		Mode:              cnf.RPICameraMode,
 		FPS:               cnf.RPICameraFPS,
@@ -81,7 +83,7 @@ func (s *rpiCameraSource) run(ctx context.Context, cnf *conf.PathConf, reloadCon
 		}},
 	}
 	medias := media.Medias{medi}
-	var stream *stream
+	var stream *stream.Stream
 
 	onData := func(dts time.Duration, au [][]byte) {
 		if stream == nil {
@@ -97,10 +99,12 @@ func (s *rpiCameraSource) run(ctx context.Context, cnf *conf.PathConf, reloadCon
 			stream = res.stream
 		}
 
-		stream.writeUnit(medi, medi.Formats[0], &formatprocessor.UnitH264{
+		stream.WriteUnit(medi, medi.Formats[0], &formatprocessor.UnitH264{
+			BaseUnit: formatprocessor.BaseUnit{
+				NTP: time.Now(),
+			},
 			PTS: dts,
 			AU:  au,
-			NTP: time.Now(),
 		})
 	}
 

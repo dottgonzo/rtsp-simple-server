@@ -9,10 +9,8 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"regexp"
 	"sort"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -24,74 +22,66 @@ import (
 	"github.com/bluenviron/mediamtx/internal/logger"
 )
 
-func iceServersToLinkHeader(iceServers []webrtc.ICEServer) []string {
-	ret := make([]string, len(iceServers))
+const (
+	webrtcPauseAfterAuthError  = 2 * time.Second
+	webrtcHandshakeTimeout     = 10 * time.Second
+	webrtcTrackGatherTimeout   = 5 * time.Second
+	webrtcPayloadMaxSize       = 1188 // 1200 - 12 (RTP header)
+	webrtcStreamID             = "mediamtx"
+	webrtcTurnSecretExpiration = 24 * 3600 * time.Second
+)
 
-	for i, server := range iceServers {
-		link := "<" + server.URLs[0] + ">; rel=\"ice-server\""
-		if server.Username != "" {
-			link += "; username=\"" + server.Username + "\"" +
-				"; credential=\"" + server.Credential.(string) + "\"; credential-type=\"password\""
-		}
-		ret[i] = link
-	}
-
-	return ret
-}
-
-var reLink = regexp.MustCompile(`^<(.+?)>; rel="ice-server"(; username="(.+?)"` +
-	`; credential="(.+?)"; credential-type="password")?`)
-
-func linkHeaderToIceServers(link []string) []webrtc.ICEServer {
-	var ret []webrtc.ICEServer
-
-	for _, li := range link {
-		m := reLink.FindStringSubmatch(li)
-		if m != nil {
-			s := webrtc.ICEServer{
-				URLs: []string{m[1]},
-			}
-
-			if m[3] != "" {
-				s.Username = m[3]
-				s.Credential = m[4]
-				s.CredentialType = webrtc.ICECredentialTypePassword
-			}
-
-			ret = append(ret, s)
-		}
-	}
-
-	return ret
-}
-
-func randInt63() int64 {
+func randInt63() (int64, error) {
 	var b [8]byte
-	rand.Read(b[:])
+	_, err := rand.Read(b[:])
+	if err != nil {
+		return 0, err
+	}
+
 	return int64(uint64(b[0]&0b01111111)<<56 | uint64(b[1])<<48 | uint64(b[2])<<40 | uint64(b[3])<<32 |
-		uint64(b[4])<<24 | uint64(b[5])<<16 | uint64(b[6])<<8 | uint64(b[7]))
+		uint64(b[4])<<24 | uint64(b[5])<<16 | uint64(b[6])<<8 | uint64(b[7])), nil
 }
 
 // https://cs.opensource.google/go/go/+/refs/tags/go1.20.4:src/math/rand/rand.go;l=119
-func randInt63n(n int64) int64 {
+func randInt63n(n int64) (int64, error) {
 	if n&(n-1) == 0 { // n is power of two, can mask
-		return randInt63() & (n - 1)
+		r, err := randInt63()
+		if err != nil {
+			return 0, err
+		}
+		return r & (n - 1), nil
 	}
+
 	max := int64((1 << 63) - 1 - (1<<63)%uint64(n))
-	v := randInt63()
-	for v > max {
-		v = randInt63()
+
+	v, err := randInt63()
+	if err != nil {
+		return 0, err
 	}
-	return v % n
+
+	for v > max {
+		v, err = randInt63()
+		if err != nil {
+			return 0, err
+		}
+	}
+
+	return v % n, nil
 }
 
-func randomTurnUser() string {
+func randomTurnUser() (string, error) {
 	const charset = "abcdefghijklmnopqrstuvwxyz1234567890"
 	b := make([]byte, 20)
 	for i := range b {
-		b[i] = charset[int(randInt63n(int64(len(charset))))]
+		j, err := randInt63n(int64(len(charset)))
+		if err != nil {
+			return "", err
+		}
+
+		b[i] = charset[int(j)]
 	}
-	return string(b)
+
+	return string(b), nil
 }
 
 type webRTCManagerAPISessionsListRes struct {
@@ -101,15 +91,6 @@ type webRTCManagerAPISessionsListRes struct {
 
 type webRTCManagerAPISessionsListReq struct {
 	res chan webRTCManagerAPISessionsListRes
-}
-
-type webRTCManagerAPISessionsKickRes struct {
-	err error
-}
-
-type webRTCManagerAPISessionsKickReq struct {
-	uuid uuid.UUID
-	res  chan webRTCManagerAPISessionsKickRes
 }
 
 type webRTCManagerAPISessionsGetRes struct {
@@ -122,33 +103,42 @@ type webRTCManagerAPISessionsGetReq struct {
 	res  chan webRTCManagerAPISessionsGetRes
 }
 
-type webRTCSessionNewRes struct {
+type webRTCManagerAPISessionsKickRes struct {
+	err error
+}
+
+type webRTCManagerAPISessionsKickReq struct {
+	uuid uuid.UUID
+	res  chan webRTCManagerAPISessionsKickRes
+}
+
+type webRTCNewSessionRes struct {
 	sx            *webRTCSession
 	answer        []byte
 	err           error
 	errStatusCode int
 }
 
-type webRTCSessionNewReq struct {
-	pathName     string
-	remoteAddr   string
-	offer        []byte
-	publish      bool
-	videoCodec   string
-	audioCodec   string
-	videoBitrate string
-	res          chan webRTCSessionNewRes
+type webRTCNewSessionReq struct {
+	pathName   string
+	remoteAddr string
+	query      string
+	user       string
+	pass       string
+	offer      []byte
+	publish    bool
+	res        chan webRTCNewSessionRes
 }
 
-type webRTCSessionAddCandidatesRes struct {
+type webRTCAddSessionCandidatesRes struct {
 	sx  *webRTCSession
 	err error
 }
 
-type webRTCSessionAddCandidatesReq struct {
+type webRTCAddSessionCandidatesReq struct {
 	secret     uuid.UUID
 	candidates []*webrtc.ICECandidateInit
-	res        chan webRTCSessionAddCandidatesRes
+	res        chan webRTCAddSessionCandidatesRes
 }
 
 type webRTCManagerParent interface {
@@ -158,7 +148,7 @@ type webRTCManagerParent interface {
 type webRTCManager struct {
 	allowOrigin     string
 	trustedProxies  conf.IPsOrCIDRs
-	iceServers      []string
+	iceServers      []conf.WebRTCICEServer
 	readBufferCount int
 	pathManager     *pathManager
 	metrics         *metrics
@@ -176,9 +166,9 @@ type webRTCManager struct {
 	iceTCPMux         ice.TCPMux
 
 	// in
-	chSessionNew           chan webRTCSessionNewReq
-	chSessionClose         chan *webRTCSession
-	chSessionAddCandidates chan webRTCSessionAddCandidatesReq
+	chNewSession           chan webRTCNewSessionReq
+	chCloseSession         chan *webRTCSession
+	chAddSessionCandidates chan webRTCAddSessionCandidatesReq
 	chAPISessionsList      chan webRTCManagerAPISessionsListReq
 	chAPISessionsGet       chan webRTCManagerAPISessionsGetReq
 	chAPIConnsKick         chan webRTCManagerAPISessionsKickReq
@@ -188,14 +178,13 @@ type webRTCManager struct {
 }
 
 func newWebRTCManager(
-	parentCtx context.Context,
 	address string,
 	encryption bool,
 	serverKey string,
 	serverCert string,
 	allowOrigin string,
 	trustedProxies conf.IPsOrCIDRs,
-	iceServers []string,
+	iceServers []conf.WebRTCICEServer,
 	readTimeout conf.StringDuration,
 	readBufferCount int,
 	pathManager *pathManager,
@@ -205,7 +194,7 @@ func newWebRTCManager(
 	iceUDPMuxAddress string,
 	iceTCPMuxAddress string,
 ) (*webRTCManager, error) {
-	ctx, ctxCancel := context.WithCancel(parentCtx)
+	ctx, ctxCancel := context.WithCancel(context.Background())
 
 	m := &webRTCManager{
 		allowOrigin:            allowOrigin,
@@ -220,9 +209,9 @@ func newWebRTCManager(
 		iceHostNAT1To1IPs:      iceHostNAT1To1IPs,
 		sessions:               make(map[*webRTCSession]struct{}),
 		sessionsBySecret:       make(map[uuid.UUID]*webRTCSession),
-		chSessionNew:           make(chan webRTCSessionNewReq),
-		chSessionClose:         make(chan *webRTCSession),
-		chSessionAddCandidates: make(chan webRTCSessionAddCandidatesReq),
+		chNewSession:           make(chan webRTCNewSessionReq),
+		chCloseSession:         make(chan *webRTCSession),
+		chAddSessionCandidates: make(chan webRTCAddSessionCandidatesReq),
 		chAPISessionsList:      make(chan webRTCManagerAPISessionsListReq),
 		chAPISessionsGet:       make(chan webRTCManagerAPISessionsGetReq),
 		chAPIConnsKick:         make(chan webRTCManagerAPISessionsKickReq),
@@ -304,7 +293,7 @@ func (m *webRTCManager) run() {
 outer:
 	for {
 		select {
-		case req := <-m.chSessionNew:
+		case req := <-m.chNewSession:
 			sx := newWebRTCSession(
 				m.ctx,
 				m.readBufferCount,
@@ -318,20 +307,20 @@ outer:
 			)
 			m.sessions[sx] = struct{}{}
 			m.sessionsBySecret[sx.secret] = sx
-			req.res <- webRTCSessionNewRes{sx: sx}
+			req.res <- webRTCNewSessionRes{sx: sx}
 
-		case sx := <-m.chSessionClose:
+		case sx := <-m.chCloseSession:
 			delete(m.sessions, sx)
 			delete(m.sessionsBySecret, sx.secret)
 
-		case req := <-m.chSessionAddCandidates:
+		case req := <-m.chAddSessionCandidates:
 			sx, ok := m.sessionsBySecret[req.secret]
 			if !ok {
-				req.res <- webRTCSessionAddCandidatesRes{err: fmt.Errorf("session not found")}
+				req.res <- webRTCAddSessionCandidatesRes{err: fmt.Errorf("session not found")}
 				continue
 			}
 
-			req.res <- webRTCSessionAddCandidatesRes{sx: sx}
+			req.res <- webRTCAddSessionCandidatesRes{sx: sx}
 
 		case req := <-m.chAPISessionsList:
 			data := &apiWebRTCSessionsList{
@@ -351,7 +340,7 @@ outer:
 		case req := <-m.chAPISessionsGet:
 			sx := m.findSessionByUUID(req.uuid)
 			if sx == nil {
-				req.res <- webRTCManagerAPISessionsGetRes{err: fmt.Errorf("not found")}
+				req.res <- webRTCManagerAPISessionsGetRes{err: errAPINotFound}
 				continue
 			}
 
@@ -360,7 +349,7 @@ outer:
 		case req := <-m.chAPIConnsKick:
 			sx := m.findSessionByUUID(req.uuid)
 			if sx == nil {
-				req.res <- webRTCManagerAPISessionsKickRes{fmt.Errorf("not found")}
+				req.res <- webRTCManagerAPISessionsKickRes{err: errAPINotFound}
 				continue
 			}
 
@@ -398,85 +387,75 @@ func (m *webRTCManager) findSessionByUUID(uuid uuid.UUID) *webRTCSession {
 	return nil
 }
 
-func (m *webRTCManager) genICEServers() []webrtc.ICEServer {
+func (m *webRTCManager) generateICEServers() ([]webrtc.ICEServer, error) {
 	ret := make([]webrtc.ICEServer, len(m.iceServers))
-	for i, s := range m.iceServers {
-		parts := strings.Split(s, ":")
-		if len(parts) == 5 {
-			if parts[1] == "AUTH_SECRET" {
-				s := webrtc.ICEServer{
-					URLs: []string{parts[0] + ":" + parts[3] + ":" + parts[4]},
-				}
 
-				expireDate := time.Now().Add(24 * 3600 * time.Second).Unix()
-				s.Username = strconv.FormatInt(expireDate, 10) + ":" + randomTurnUser()
+	for i, server := range m.iceServers {
+		if server.Username == "AUTH_SECRET" {
+			expireDate := time.Now().Add(webrtcTurnSecretExpiration).Unix()
 
-				h := hmac.New(sha1.New, []byte(parts[2]))
-				h.Write([]byte(s.Username))
-				s.Credential = base64.StdEncoding.EncodeToString(h.Sum(nil))
-
-				ret[i] = s
-			} else {
-				ret[i] = webrtc.ICEServer{
-					URLs:       []string{parts[0] + ":" + parts[3] + ":" + parts[4]},
-					Username:   parts[1],
-					Credential: parts[2],
-				}
+			user, err := randomTurnUser()
+			if err != nil {
+				return nil, err
 			}
-		} else {
-			ret[i] = webrtc.ICEServer{
-				URLs: []string{s},
-			}
+
+			server.Username = strconv.FormatInt(expireDate, 10) + ":" + user
+
+			h := hmac.New(sha1.New, []byte(server.Password))
+			h.Write([]byte(server.Username))
+
+			server.Password = base64.StdEncoding.EncodeToString(h.Sum(nil))
+		}
+
+		ret[i] = webrtc.ICEServer{
+			URLs:       []string{server.URL},
+			Username:   server.Username,
+			Credential: server.Password,
 		}
 	}
-	return ret
+
+	return ret, nil
 }
 
-// sessionNew is called by webRTCHTTPServer.
-func (m *webRTCManager) sessionNew(req webRTCSessionNewReq) webRTCSessionNewRes {
-	req.res = make(chan webRTCSessionNewRes)
+// newSession is called by webRTCHTTPServer.
+func (m *webRTCManager) newSession(req webRTCNewSessionReq) webRTCNewSessionRes {
+	req.res = make(chan webRTCNewSessionRes)
 
 	select {
-	case m.chSessionNew <- req:
-		res1 := <-req.res
+	case m.chNewSession <- req:
+		res := <-req.res
 
-		select {
-		case res2 := <-req.res:
-			return res2
-
-		case <-res1.sx.ctx.Done():
-			return webRTCSessionNewRes{err: fmt.Errorf("terminated"), errStatusCode: http.StatusInternalServerError}
-		}
+		return res.sx.new(req)
 
 	case <-m.ctx.Done():
-		return webRTCSessionNewRes{err: fmt.Errorf("terminated"), errStatusCode: http.StatusInternalServerError}
+		return webRTCNewSessionRes{err: fmt.Errorf("terminated"), errStatusCode: http.StatusInternalServerError}
 	}
 }
 
-// sessionClose is called by webRTCSession.
-func (m *webRTCManager) sessionClose(sx *webRTCSession) {
+// closeSession is called by webRTCSession.
+func (m *webRTCManager) closeSession(sx *webRTCSession) {
 	select {
-	case m.chSessionClose <- sx:
+	case m.chCloseSession <- sx:
 	case <-m.ctx.Done():
 	}
 }
 
-// sessionAddCandidates is called by webRTCHTTPServer.
-func (m *webRTCManager) sessionAddCandidates(
-	req webRTCSessionAddCandidatesReq,
-) webRTCSessionAddCandidatesRes {
-	req.res = make(chan webRTCSessionAddCandidatesRes)
+// addSessionCandidates is called by webRTCHTTPServer.
+func (m *webRTCManager) addSessionCandidates(
+	req webRTCAddSessionCandidatesReq,
+) webRTCAddSessionCandidatesRes {
+	req.res = make(chan webRTCAddSessionCandidatesRes)
 	select {
-	case m.chSessionAddCandidates <- req:
+	case m.chAddSessionCandidates <- req:
 		res1 := <-req.res
 		if res1.err != nil {
 			return res1
 		}
 
-		return res1.sx.addRemoteCandidates(req)
+		return res1.sx.addCandidates(req)
 
 	case <-m.ctx.Done():
-		return webRTCSessionAddCandidatesRes{err: fmt.Errorf("terminated")}
+		return webRTCAddSessionCandidatesRes{err: fmt.Errorf("terminated")}
 	}
 }
 

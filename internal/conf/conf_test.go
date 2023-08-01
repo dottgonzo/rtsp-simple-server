@@ -98,8 +98,8 @@ func TestConfFromFile(t *testing.T) {
 }
 
 func TestConfFromFileAndEnv(t *testing.T) {
-	os.Setenv("RTSP_PATHS_CAM1_SOURCE", "rtsp://testing")
-	defer os.Unsetenv("RTSP_PATHS_CAM1_SOURCE")
+	os.Setenv("MTX_PATHS_CAM1_SOURCE", "rtsp://testing")
+	defer os.Unsetenv("MTX_PATHS_CAM1_SOURCE")
 
 	os.Setenv("RTSP_PROTOCOLS", "tcp")
 	defer os.Unsetenv("RTSP_PROTOCOLS")
@@ -137,8 +137,8 @@ func TestConfFromFileAndEnv(t *testing.T) {
 }
 
 func TestConfFromEnvOnly(t *testing.T) {
-	os.Setenv("RTSP_PATHS_CAM1_SOURCE", "rtsp://testing")
-	defer os.Unsetenv("RTSP_PATHS_CAM1_SOURCE")
+	os.Setenv("MTX_PATHS_CAM1_SOURCE", "rtsp://testing")
+	defer os.Unsetenv("MTX_PATHS_CAM1_SOURCE")
 
 	conf, hasFile, err := Load("mediamtx.yml")
 	require.NoError(t, err)
@@ -177,9 +177,8 @@ func TestConfEncryption(t *testing.T) {
 		copy(secretKey[:], key)
 
 		var nonce [24]byte
-		if _, err := io.ReadFull(rand.Reader, nonce[:]); err != nil {
-			panic(err)
-		}
+		_, err := io.ReadFull(rand.Reader, nonce[:])
+		require.NoError(t, err)
 
 		encrypted := secretbox.Seal(nonce[:], []byte(plaintext), &nonce, &secretKey)
 		return base64.StdEncoding.EncodeToString(encrypted)

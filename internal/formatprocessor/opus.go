@@ -6,6 +6,7 @@ import (
 
 	"github.com/bluenviron/gortsplib/v3/pkg/formats"
 	"github.com/bluenviron/gortsplib/v3/pkg/formats/rtpsimpleaudio"
+	"github.com/bluenviron/mediacommon/pkg/codecs/opus"
 	"github.com/pion/rtp"
 
 	"github.com/bluenviron/mediamtx/internal/logger"
@@ -13,20 +14,9 @@ import (
 
 // UnitOpus is a Opus data unit.
 type UnitOpus struct {
-	RTPPackets []*rtp.Packet
-	NTP        time.Time
-	PTS        time.Duration
-	Frame      []byte
-}
-
-// GetRTPPackets implements Unit.
-func (d *UnitOpus) GetRTPPackets() []*rtp.Packet {
-	return d.RTPPackets
-}
-
-// GetNTP implements Unit.
-func (d *UnitOpus) GetNTP() time.Time {
-	return d.NTP
+	BaseUnit
+	PTS     time.Duration
+	Packets [][]byte
 }
 
 type formatProcessorOpus struct {
@@ -91,12 +81,12 @@ func (t *formatProcessorOpus) Process(unit Unit, hasNonRTSPReaders bool) error {
 				}
 			}
 
-			frame, pts, err := t.decoder.Decode(pkt)
+			packet, pts, err := t.decoder.Decode(pkt)
 			if err != nil {
 				return err
 			}
 
-			tunit.Frame = frame
+			tunit.Packets = [][]byte{packet}
 			tunit.PTS = pts
 		}
 
@@ -105,18 +95,27 @@ func (t *formatProcessorOpus) Process(unit Unit, hasNonRTSPReaders bool) error {
 	}
 
 	// encode into RTP
-	pkt, err := t.encoder.Encode(tunit.Frame, tunit.PTS)
-	if err != nil {
-		return err
+	var rtpPackets []*rtp.Packet //nolint:prealloc
+	pts := tunit.PTS
+	for _, packet := range tunit.Packets {
+		pkt, err := t.encoder.Encode(packet, pts)
+		if err != nil {
+			return err
+		}
+
+		rtpPackets = append(rtpPackets, pkt)
+		pts += opus.PacketDuration(packet)
 	}
-	tunit.RTPPackets = []*rtp.Packet{pkt}
+	tunit.RTPPackets = rtpPackets
 
 	return nil
 }
 
 func (t *formatProcessorOpus) UnitForRTPPacket(pkt *rtp.Packet, ntp time.Time) Unit {
 	return &UnitOpus{
-		RTPPackets: []*rtp.Packet{pkt},
-		NTP:        ntp,
+		BaseUnit: BaseUnit{
+			RTPPackets: []*rtp.Packet{pkt},
+			NTP:        ntp,
+		},
 	}
 }

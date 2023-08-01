@@ -90,6 +90,7 @@ type PathConf struct {
 	RPICameraGain              float64 `json:"rpiCameraGain"`
 	RPICameraEV                float64 `json:"rpiCameraEV"`
 	RPICameraROI               string  `json:"rpiCameraROI"`
+	RPICameraHDR               bool    `json:"rpiCameraHDR"`
 	RPICameraTuningFile        string  `json:"rpiCameraTuningFile"`
 	RPICameraMode              string  `json:"rpiCameraMode"`
 	RPICameraFPS               float64 `json:"rpiCameraFPS"`
@@ -119,15 +120,17 @@ type PathConf struct {
 }
 
 func (pconf *PathConf) check(conf *Conf, name string) error {
-	// normal path
-	if name == "" || name[0] != '~' {
+	switch {
+	case name == "all":
+		pconf.Regexp = regexp.MustCompile("^.*$")
+
+	case name == "" || name[0] != '~': // normal path
 		err := IsValidPathName(name)
 		if err != nil {
 			return fmt.Errorf("invalid path name '%s': %s", name, err)
 		}
 
-		// regular expression path
-	} else {
+	default: // regular expression-based path
 		pathRegexp, err := regexp.Compile(name[1:])
 		if err != nil {
 			return fmt.Errorf("invalid regular expression: %s", name[1:])
@@ -205,6 +208,16 @@ func (pconf *PathConf) check(conf *Conf, name string) error {
 		ip := net.ParseIP(host)
 		if ip == nil {
 			return fmt.Errorf("'%s' is not a valid IP", host)
+		}
+
+	case strings.HasPrefix(pconf.Source, "srt://"):
+		if pconf.Regexp != nil {
+			return fmt.Errorf("a path with a regular expression (or path 'all') cannot have a SRT source. use another path")
+		}
+
+		_, err := gourl.Parse(pconf.Source)
+		if err != nil {
+			return fmt.Errorf("'%s' is not a valid HLS URL", pconf.Source)
 		}
 
 	case pconf.Source == "redirect":
@@ -334,6 +347,7 @@ func (pconf PathConf) HasStaticSource() bool {
 		strings.HasPrefix(pconf.Source, "http://") ||
 		strings.HasPrefix(pconf.Source, "https://") ||
 		strings.HasPrefix(pconf.Source, "udp://") ||
+		strings.HasPrefix(pconf.Source, "srt://") ||
 		pconf.Source == "rpiCamera"
 }
 

@@ -4,12 +4,11 @@
 package rpicamera
 
 import (
+	"debug/elf"
 	_ "embed"
-	"encoding/base64"
 	"fmt"
 	"os"
 	"os/exec"
-	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -49,52 +48,12 @@ func startEmbeddedExe(content []byte, env []string) (*exec.Cmd, error) {
 	return cmd, nil
 }
 
-func serializeParams(p Params) []byte {
-	rv := reflect.ValueOf(p)
-	rt := rv.Type()
-	nf := rv.NumField()
-	ret := make([]string, nf)
-
-	for i := 0; i < nf; i++ {
-		entry := rt.Field(i).Name + ":"
-		f := rv.Field(i)
-
-		switch f.Kind() {
-		case reflect.Int:
-			entry += strconv.FormatInt(f.Int(), 10)
-
-		case reflect.Float64:
-			entry += strconv.FormatFloat(f.Float(), 'f', -1, 64)
-
-		case reflect.String:
-			entry += base64.StdEncoding.EncodeToString([]byte(f.String()))
-
-		case reflect.Bool:
-			if f.Bool() {
-				entry += "1"
-			} else {
-				entry += "0"
-			}
-
-		default:
-			panic("unhandled type")
-		}
-
-		ret[i] = entry
-	}
-
-	return []byte(strings.Join(ret, " "))
-}
-
 func findLibrary(name string) (string, error) {
 	byts, err := exec.Command("ldconfig", "-p").Output()
 	if err == nil {
 		for _, line := range strings.Split(string(byts), "\n") {
 			f := strings.Split(line, " => ")
 			if len(f) == 2 && strings.Contains(f[1], name+".so") {
-				if runtime.GOARCH == "arm" && !strings.Contains(f[1], "arm-linux-gnueabihf") {
-					return "", fmt.Errorf("libcamera is 64-bit, you need the 64-bit server version")
-				}
 				return f[1], nil
 			}
 		}
@@ -103,48 +62,53 @@ func findLibrary(name string) (string, error) {
 	return "", fmt.Errorf("library '%s' not found", name)
 }
 
-func setupSymlink(name string) error {
-	lib, err := findLibrary(name)
+func check64bit(fpath string) error {
+	f, err := os.Open(fpath)
 	if err != nil {
 		return err
 	}
+	defer f.Close()
 
-	os.Remove("/dev/shm/" + name + ".so.x.x.x")
-	return os.Symlink(lib, "/dev/shm/"+name+".so.x.x.x")
-}
+	ef, err := elf.NewFile(f)
+	if err != nil {
+		return err
+	}
+	defer ef.Close()
 
-var (
-	mutex    sync.Mutex
-	setupped bool
-)
-
-func setupLibcameraOnce() error {
-	mutex.Lock()
-	defer mutex.Unlock()
-
-	if !setupped {
-		err := setupSymlink("libcamera")
-		if err != nil {
-			return err
-		}
-
-		err = setupSymlink("libcamera-base")
-		if err != nil {
-			return err
-		}
-
-		setupped = true
+	if ef.FileHeader.Class == elf.ELFCLASS64 {
+		return fmt.Errorf("libcamera is 64-bit, you need the 64-bit server version")
 	}
 
 	return nil
 }
 
-// Cleanup cleanups files created by the camera implementation.
-func Cleanup() {
-	if setupped {
-		os.Remove("/dev/shm/libcamera-base.so.x.x.x")
-		os.Remove("/dev/shm/libcamera.so.x.x.x")
+var (
+	mutex   sync.Mutex
+	checked bool
+)
+
+func checkLibraries64Bit() error {
+	mutex.Lock()
+	defer mutex.Unlock()
+
+	if checked {
+		return nil
 	}
+
+	for _, name := range []string{"libcamera", "libcamera-base"} {
+		lib, err := findLibrary(name)
+		if err != nil {
+			return err
+		}
+
+		err = check64bit(lib)
+		if err != nil {
+			return err
+		}
+	}
+
+	checked = true
+	return nil
 }
 
 type RPICamera struct {
@@ -162,15 +126,18 @@ func New(
 	params Params,
 	onData func(time.Duration, [][]byte),
 ) (*RPICamera, error) {
-	err := setupLibcameraOnce()
-	if err != nil {
-		return nil, err
+	if runtime.GOARCH == "arm" {
+		err := checkLibraries64Bit()
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	c := &RPICamera{
 		onData: onData,
 	}
 
+	var err error
 	c.pipeConf, err = newPipe()
 	if err != nil {
 		return nil, err
@@ -183,7 +150,6 @@ func New(
 	}
 
 	env := []string{
-		"LD_LIBRARY_PATH=/dev/shm",
 		"PIPE_CONF_FD=" + strconv.FormatInt(int64(c.pipeConf.readFD), 10),
 		"PIPE_VIDEO_FD=" + strconv.FormatInt(int64(c.pipeVideo.writeFD), 10),
 	}
@@ -195,7 +161,7 @@ func New(
 		return nil, err
 	}
 
-	c.pipeConf.write(append([]byte{'c'}, serializeParams(params)...))
+	c.pipeConf.write(append([]byte{'c'}, params.serialize()...))
 
 	c.waitDone = make(chan error)
 	go func() {
@@ -241,7 +207,7 @@ func (c *RPICamera) Close() {
 }
 
 func (c *RPICamera) ReloadParams(params Params) {
-	c.pipeConf.write(append([]byte{'c'}, serializeParams(params)...))
+	c.pipeConf.write(append([]byte{'c'}, params.serialize()...))
 }
 
 func (c *RPICamera) readReady() error {

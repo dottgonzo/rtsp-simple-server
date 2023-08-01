@@ -4,34 +4,37 @@ go 1.20
 
 require (
 	code.cloudfoundry.org/bytefmt v0.0.0
-	github.com/abema/go-mp4 v0.10.1
-	github.com/alecthomas/kong v0.7.1
-	github.com/asticode/go-astits v1.11.0
-	github.com/bluenviron/gohlslib v0.2.5
-	github.com/bluenviron/gortsplib/v3 v3.7.0
-	github.com/bluenviron/mediacommon v0.5.1
+	github.com/abema/go-mp4 v0.11.0
+	github.com/alecthomas/kong v0.8.0
+	github.com/bluenviron/gohlslib v0.3.1-0.20230730162911-eb9f86511072
+	github.com/bluenviron/gortsplib/v3 v3.9.1-0.20230730204034-8b8b52e689d9
+	github.com/bluenviron/mediacommon v0.7.1-0.20230730144331-10b74a4f6eda
+	github.com/datarhei/gosrt v0.5.3
 	github.com/fsnotify/fsnotify v1.6.0
 	github.com/gin-gonic/gin v1.9.1
 	github.com/google/uuid v1.3.0
-	github.com/gookit/color v1.5.3
+	github.com/gookit/color v1.5.4
 	github.com/gorilla/websocket v1.5.0
 	github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51
 	github.com/notedit/rtmp v0.0.2
-	github.com/pion/ice/v2 v2.3.7
+	github.com/pion/ice/v2 v2.3.9
 	github.com/pion/interceptor v0.1.17
 	github.com/pion/rtcp v1.2.10
-	github.com/pion/rtp v1.7.13
+	github.com/pion/rtp v1.8.1
 	github.com/pion/sdp/v3 v3.0.6
-	github.com/pion/webrtc/v3 v3.2.10
+	github.com/pion/webrtc/v3 v3.2.13
 	github.com/stretchr/testify v1.8.4
-	golang.org/x/crypto v0.10.0
-	golang.org/x/net v0.11.0
+	golang.org/x/crypto v0.11.0
+	golang.org/x/net v0.12.0
+	golang.org/x/term v0.10.0
 	gopkg.in/yaml.v2 v2.4.0
 )
 
 require (
 	github.com/aler9/writerseeker v0.0.0-20220601075008-6f0e685b9c82 // indirect
 	github.com/asticode/go-astikit v0.30.0 // indirect
+	github.com/asticode/go-astits v1.11.1-0.20230727094110-0df190a2dd87 // indirect
+	github.com/benburkert/openpgp v0.0.0-20160410205803-c2471f86866c // indirect
 	github.com/bytedance/sonic v1.9.1 // indirect
 	github.com/chenzhuoyu/base64x v0.0.0-20221115062448-fe3a3abad311 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
@@ -55,18 +58,20 @@ require (
 	github.com/pion/randutil v0.1.0 // indirect
 	github.com/pion/sctp v1.8.7 // indirect
 	github.com/pion/srtp/v2 v2.0.15 // indirect
-	github.com/pion/stun v0.6.0 // indirect
+	github.com/pion/stun v0.6.1 // indirect
 	github.com/pion/transport/v2 v2.2.1 // indirect
-	github.com/pion/turn/v2 v2.1.0 // indirect
+	github.com/pion/turn/v2 v2.1.2 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/ugorji/go/codec v1.2.11 // indirect
 	github.com/xo/terminfo v0.0.0-20210125001918-ca9a967f8778 // indirect
 	golang.org/x/arch v0.3.0 // indirect
-	golang.org/x/sys v0.9.0 // indirect
-	golang.org/x/text v0.10.0 // indirect
+	golang.org/x/sys v0.10.0 // indirect
+	golang.org/x/text v0.11.0 // indirect
 	google.golang.org/protobuf v1.30.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
 replace code.cloudfoundry.org/bytefmt => github.com/cloudfoundry/bytefmt v0.0.0-20211005130812-5bb3c17173e5
+
+replace github.com/datarhei/gosrt => github.com/aler9/gosrt v0.0.0-20230731174125-a330dfc27f6d

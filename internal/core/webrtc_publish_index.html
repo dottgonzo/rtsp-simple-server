@@ -72,6 +72,14 @@ select {
         <div id="bitrate_line">
             video bitrate (kbps):
             <input id="video_bitrate" type="text" value="10000" />
+
+            audio bitrate (kbps):
+            <input id="audio_bitrate" type="text" value="32" />
+
+            <div>
+                <input id="audio_voice" type="checkbox" checked>
+                <label for="audio_voice">optimize for voice</label>
+            </div>
         </div>
         <div id="submit_line">
             <button id="publish_confirm">publish</button>
@@ -80,6 +88,9 @@ select {
     <div id="transmitting" style="display: none;">
         publishing
     </div>
+    <div id="error" style="display: none;">
+        <span id="error-message"></span>
+    </div>
 </div>
 
 <script>
@@ -87,28 +98,37 @@ select {
 const INITIALIZING = 0;
 const DEVICE = 1;
 const TRANSMITTING = 2;
+const ERROR = 3;
 
 let state = INITIALIZING;
+let errorMessage = '';
 
-const setState = (newState) => {
-    state = newState;
+const render = () => {
+    for (const el of ['initializing', 'device', 'transmitting', 'error']) {
+        document.getElementById(el).style.display = 'none';
+    }
 
     switch (state) {
     case DEVICE:
-        document.getElementById("initializing").style.display = 'none';
-        document.getElementById("device").style.display = 'flex';
-        document.getElementById("transmitting").style.display = 'none';
+        document.getElementById('device').style.display = 'flex';
         break;
 
     case TRANSMITTING:
-        document.getElementById("initializing").style.display = 'none';
-        document.getElementById("device").style.display = 'none';
-        document.getElementById("transmitting").style.display = 'flex';
+        document.getElementById('transmitting').style.display = 'flex';
+        break;
+
+    case ERROR:
+        document.getElementById('error').style.display = 'flex';
+        document.getElementById('error-message').innerHTML = 'error: ' + errorMessage;
         break;
     }
 };
 
 const restartPause = 2000;
+
+const unquoteCredential = (v) => (
+    JSON.parse(`"${v}"`)
+);
 
 const linkToIceServers = (links) => (
     (links !== null) ? links.split(', ').map((link) => {
@@ -118,8 +138,8 @@ const linkToIceServers = (links) => (
         };
 
         if (m[3] !== undefined) {
-            ret.username = m[3];
-            ret.credential = m[4];
+            ret.username = unquoteCredential(m[3]);
+            ret.credential = unquoteCredential(m[4]);
             ret.credentialType = "password";
         }
 
@@ -175,7 +195,100 @@ const generateSdpFragment = (offerData, candidates) => {
     }
 
     return frag;
-}
+};
+
+const setCodec = (section, codec) => {
+    const lines = section.split('\r\n');
+    const lines2 = [];
+    const payloadFormats = [];
+
+    for (const line of lines) {
+        if (!line.startsWith('a=rtpmap:')) {
+            lines2.push(line);
+        } else {
+            if (line.toLowerCase().includes(codec)) {
+                payloadFormats.push(line.slice('a=rtpmap:'.length).split(' ')[0]);
+                lines2.push(line);
+            }
+        }
+    }
+
+    const lines3 = [];
+
+    for (const line of lines2) {
+        if (line.startsWith('a=fmtp:')) {
+            if (payloadFormats.includes(line.slice('a=fmtp:'.length).split(' ')[0])) {
+                lines3.push(line);
+            }
+        } else if (line.startsWith('a=rtcp-fb:')) {
+            if (payloadFormats.includes(line.slice('a=rtcp-fb:'.length).split(' ')[0])) {
+                lines3.push(line);
+            }
+        } else {
+            lines3.push(line);
+        }
+    }
+
+    return lines3.join('\r\n');
+};
+
+const setVideoBitrate = (section, bitrate) => {
+    let lines = section.split('\r\n');
+
+    for (let i = 0; i < lines.length; i++) {
+        if (lines[i].startsWith('c=')) {
+            lines = [...lines.slice(0, i+1), 'b=TIAS:' + (parseInt(bitrate) * 1024).toString(), ...lines.slice(i+1)];
+            break
+        }
+    }
+
+    return lines.join('\r\n');
+};
+
+const setAudioBitrate = (section, bitrate, voice) => {
+    let opusPayloadFormat = '';
+    let lines = section.split('\r\n');
+
+    for (let i = 0; i < lines.length; i++) {
+        if (lines[i].startsWith('a=rtpmap:') && lines[i].toLowerCase().includes('opus/')) {
+            opusPayloadFormat = lines[i].slice('a=rtpmap:'.length).split(' ')[0];
+            break;
+        }
+    }
+
+    if (opusPayloadFormat === '') {
+        return section;
+    }
+
+    for (let i = 0; i < lines.length; i++) {
+        if (lines[i].startsWith('a=fmtp:' + opusPayloadFormat + ' ')) {
+            if (voice) {
+                lines[i] = 'a=fmtp:' + opusPayloadFormat + ' minptime=10;useinbandfec=1;maxaveragebitrate='
+                    + (parseInt(bitrate) * 1024).toString();
+            } else {
+                lines[i] = 'a=fmtp:' + opusPayloadFormat + ' maxplaybackrate=48000;stereo=1;sprop-stereo=1;maxaveragebitrate'
+                    + (parseInt(bitrate) * 1024).toString();
+            }
+        }
+    }
+
+    return lines.join('\r\n');
+};
+
+const editAnswer = (answer, videoCodec, audioCodec, videoBitrate, audioBitrate, audioVoice) => {
+    const sections = answer.split('m=');
+
+    for (let i = 0; i < sections.length; i++) {
+        const section = sections[i];
+        if (section.startsWith('video')) {
+            sections[i] = setVideoBitrate(setCodec(section, videoCodec), videoBitrate);
+        } else if (section.startsWith('audio')) {
+            sections[i] = setAudioBitrate(setCodec(section, audioCodec), audioBitrate, audioVoice);
+        }
+    }
+
+    return sections.join('m=');
+};
 
 class Transmitter {
     constructor(stream) {
@@ -190,7 +303,7 @@ class Transmitter {
     start() {
         console.log("requesting ICE servers");
 
-        fetch('whip', {
+        fetch(new URL('whip', window.location.href) + window.location.search, {
             method: 'OPTIONS',
         })
             .then((res) => this.onIceServers(res))
@@ -213,42 +326,36 @@ class Transmitter {
         });
 
         this.pc.createOffer()
-            .then((desc) => {
-                this.offerData = parseOffer(desc.sdp);
-                this.pc.setLocalDescription(desc);
+            .then((offer) => this.onLocalOffer(offer));
+    }
 
-                console.log("sending offer");
+    onLocalOffer(offer) {
+        this.offerData = parseOffer(offer.sdp);
+        this.pc.setLocalDescription(offer);
 
-                const videoCodec = document.getElementById('video_codec').value;
-                const audioCodec = document.getElementById('audio_codec').value;
-                const videoBitrate = document.getElementById('video_bitrate').value;
+        console.log("sending offer");
 
-                let params = '?video_codec=' + videoCodec +
-                    '&audio_codec=' + audioCodec +
-                    '&video_bitrate=' + videoBitrate;
-
-                fetch('whip' + params, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/sdp',
-                    },
-                    body: desc.sdp,
-                })
-                    .then((res) => {
-                        if (res.status !== 201) {
-                            throw new Error('bad status code');
-                        }
-                        this.eTag = res.headers.get('E-Tag');
-                        return res.text();
-                    })
-                    .then((sdp) => this.onRemoteDescription(new RTCSessionDescription({
-                        type: 'answer',
-                        sdp,
-                    })))
-                    .catch((err) => {
-                        console.log('error: ' + err);
-                        this.scheduleRestart();
-                    });
+        fetch(new URL('whip', window.location.href) + window.location.search, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/sdp',
+            },
+            body: offer.sdp,
+        })
+            .then((res) => {
+                if (res.status !== 201) {
+                    throw new Error('bad status code');
+                }
+                this.eTag = res.headers.get('E-Tag');
+                return res.text();
+            })
+            .then((sdp) => this.onRemoteAnswer(new RTCSessionDescription({
+                type: 'answer',
+                sdp,
+            })))
+            .catch((err) => {
+                console.log('error: ' + err);
+                this.scheduleRestart();
             });
     }
 
@@ -265,10 +372,22 @@ class Transmitter {
         }
     }
 
-    onRemoteDescription(answer) {
+    onRemoteAnswer(answer) {
 		if (this.restartTimeout !== null) {
 			return;
 		}
+
+        answer = new RTCSessionDescription({
+            type: 'answer',
+            sdp: editAnswer(
+                answer.sdp,
+                document.getElementById('video_codec').value,
+                document.getElementById('audio_codec').value,
+                document.getElementById('video_bitrate').value,
+                document.getElementById('audio_bitrate').value,
+                document.getElementById('audio_voice').value,
+            ),
+        });
 
         this.pc.setRemoteDescription(new RTCSessionDescription(answer));
 
@@ -293,7 +412,7 @@ class Transmitter {
     }
 
     sendLocalCandidates(candidates) {
-        fetch('whip', {
+        fetch(new URL('whip', window.location.href) + window.location.search, {
             method: 'PATCH',
             headers: {
                 'Content-Type': 'application/trickle-ice-sdpfrag',
@@ -333,7 +452,8 @@ class Transmitter {
 }
 
 const onTransmit = (stream) => {
-    setState(TRANSMITTING);
+    state = TRANSMITTING;
+    render();
     document.getElementById('video').srcObject = stream;
     new Transmitter(stream);
 };
@@ -356,6 +476,13 @@ const onPublish = () => {
             audio = {
                 deviceId: audioId,
             };
+
+            const voice = document.getElementById('audio_voice').checked;
+            if (!voice) {
+                audio.autoGainControl = false;
+                audio.echoCancellation = false;
+                audio.noiseSuppression = false;
+            }
         }
 
         navigator.mediaDevices.getUserMedia({ video, audio })
@@ -425,7 +552,7 @@ const populateCodecs = () => {
             for (const codec of ['av1/90000', 'vp9/90000', 'vp8/90000', 'h264/90000']) {
                 if (sdp.includes(codec)) {
                     const opt = document.createElement('option');
-                    opt.value = codec.split('/')[0];
+                    opt.value = codec;
                     opt.text = codec.split('/')[0].toUpperCase();
                     document.getElementById('video_codec').appendChild(opt);
                 }
@@ -434,7 +561,7 @@ const populateCodecs = () => {
             for (const codec of ['opus/48000', 'g722/8000', 'pcmu/8000', 'pcma/8000']) {
                 if (sdp.includes(codec)) {
                     const opt = document.createElement('option');
-                    opt.value = codec.split('/')[0];
+                    opt.value = codec;
                     opt.text = codec.split('/')[0].toUpperCase();
                     document.getElementById('audio_codec').appendChild(opt);
                 }
@@ -445,13 +572,26 @@ const populateCodecs = () => {
 };
 
 const initialize = () => {
+    if (navigator.mediaDevices === undefined) {
+        state = ERROR;
+        errorMessage = 'can\'t access webcams or microphones. Make sure that WebRTC encryption is enabled.';
+        render();
+        return;
+    }
+
     navigator.mediaDevices.getUserMedia({ video: true, audio: true })
         .then(() => Promise.all([
             populateDevices(),
             populateCodecs(),
         ]))
         .then(() => {
-            setState(DEVICE);
+            state = DEVICE;
+            render();
+        })
+        .catch((err) => {
+            state = ERROR;
+            errorMessage = err.toString();
+            render();
         });
 };
 
